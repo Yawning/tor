@@ -46,6 +46,14 @@
 #elif defined(__APPLE__)
 #  include <libkern/OSByteOrder.h>
 #  define _le64toh(x) OSSwapLittleToHostInt64(x)
+#elif defined(sun) || defined(__sun)
+/* Slowlaris is only big endian on Sparc */
+#  include <sys/byteorder.h>
+#  if defined(__sparc) || defined(__sparc__)
+#    define _le64toh(x) BSWAP_64(x)
+#  else
+#    define _le64toh(x) ((uint64_t)(x))
+#  endif
 #else
 
 /* See: http://sourceforge.net/p/predef/wiki/Endianness/ */
