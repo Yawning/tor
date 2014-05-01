@@ -490,7 +490,9 @@ static int options_transition_affects_descriptor(
 static int check_nickname_list(const char *lst, const char *name, char **msg);
 
 static int parse_bridge_line(const char *line, int validate_only);
-static int parse_client_transport_line(const char *line, int validate_only);
+static int parse_client_transport_line(const or_options_t *options,
+                                       const char *line,
+                                       int validate_only);
 
 static int parse_server_transport_line(const char *line, int validate_only);
 static char *get_bindaddr_from_transport_listen_line(const char *line,
@@ -1337,7 +1339,7 @@ options_act(const or_options_t *old_options)
   pt_prepare_proxy_list_for_config_read();
   if (options->ClientTransportPlugin) {
     for (cl = options->ClientTransportPlugin; cl; cl = cl->next) {
-      if (parse_client_transport_line(cl->value, 0)<0) {
+      if (parse_client_transport_line(options, cl->value, 0)<0) {
         log_warn(LD_BUG,
                  "Previously validated ClientTransportPlugin line "
                  "could not be added!");
@@ -2954,11 +2956,11 @@ options_validate(or_options_t *old_options, or_options_t *options,
     }
   }
 
-  /* Check if more than one proxy type has been enabled. */
+  /* Check if more than one exclusive proxy type has been enabled. */
   if (!!options->Socks4Proxy + !!options->Socks5Proxy +
-      !!options->HTTPSProxy + !!options->ClientTransportPlugin > 1)
+      !!options->HTTPSProxy > 1)
     REJECT("You have configured more than one proxy type. "
-           "(Socks4Proxy|Socks5Proxy|HTTPSProxy|ClientTransportPlugin)");
+           "(Socks4Proxy|Socks5Proxy|HTTPSProxy)");
 
   /* Check if the proxies will give surprising behavior. */
   if (options->HTTPProxy && !(options->Socks4Proxy ||
@@ -3073,7 +3075,7 @@ options_validate(or_options_t *old_options, or_options_t *options,
   }
 
   for (cl = options->ClientTransportPlugin; cl; cl = cl->next) {
-    if (parse_client_transport_line(cl->value, 1)<0)
+    if (parse_client_transport_line(options, cl->value, 1)<0)
       REJECT("Transport line did not parse. See logs for details.");
   }
 
@@ -4229,7 +4231,8 @@ parse_bridge_line(const char *line, int validate_only)
  * our internal transport list.
  * - If it's a managed proxy line, launch the managed proxy. */
 static int
-parse_client_transport_line(const char *line, int validate_only)
+parse_client_transport_line(const or_options_t *options, const char *line,
+                            int validate_only)
 {
   smartlist_t *items = NULL;
   int r;
@@ -4308,6 +4311,13 @@ parse_client_transport_line(const char *line, int validate_only)
       pt_kickstart_client_proxy(transport_list, proxy_argv);
     }
   } else { /* external */
+    /* ClientTransportPlugins connecting through a proxy is managed only. */
+    if (options->Socks4Proxy || options->Socks5Proxy || options->HTTPSProxy) {
+      log_warn(LD_CONFIG, "You have configured an external proxy with another "
+                          "proxy type. (Socks4Proxy|Socks5Proxy|HTTPSProxy)");
+      goto err;
+    }
+
     if (smartlist_len(transport_list) != 1) {
       log_warn(LD_CONFIG, "You can't have an external proxy with "
                "more than one transports.");

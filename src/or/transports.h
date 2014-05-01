@@ -74,6 +74,9 @@ typedef struct {
   char **argv; /* the cli arguments of this proxy */
   int conf_protocol; /* the configuration protocol version used */
 
+  char *proxy_uri;  /* the outgoing proxy in TOR_PT_PROXY URI format */
+  int proxy_supported : 1; /* the proxy claims to honor TOR_PT_PROXY */
+
   int is_server; /* is it a server proxy? */
 
   /* A pointer to the process handle of this managed proxy. */
