@@ -1,0 +1,5 @@
+  o Minor bugfixes:
+    - Initialize the cryptography library in the tor-resolve helper
+      program so that the global SipHash-2-4 key used by the hash
+      table implementation is set.  Fixes bug 13295; bugfix on
+      0.2.5.3-alpha.
