@@ -47,6 +47,7 @@ static int rend_service_load_auth_keys(struct rend_service_t *s,
                                        const char *hfname);
 static struct rend_service_t *rend_service_get_by_pk_digest(
     const char* digest);
+static struct rend_service_t *rend_service_get_by_service_id(const char *id);
 static const char *rend_service_escaped_dir(
     const struct rend_service_t *s);
 
@@ -719,25 +720,29 @@ rend_service_add_ephemeral(crypto_pk_t *pk, const smartlist_t *port_cfg_strs)
   s->directory = NULL; /* This indicates the service is ephemeral. */
   s->private_key = pk;
   s->auth_type = REND_NO_AUTH;
+  s->ports = smartlist_new();
   if (rend_service_load_keys(s)<0) {
     goto err;
   }
 
   /*
-   * Enforcing pk uniqueness should be done by rend_service_load_keys(), but
+   * Enforcing pk/id uniqueness should be done by rend_service_load_keys(), but
    * it's not, see #14828.
    */
   if (rend_service_get_by_pk_digest(s->pk_digest)) {
-    log_warn(LD_CONFIG, "Ephemeral Hidden Service public key collides with "
+    log_warn(LD_CONFIG, "Ephemeral Hidden Service private key collides with "
             "an existing service.");
     goto err;
   }
-  /* XXX: Also enforce `service_id` uniqueness. */
+  if (rend_service_get_by_service_id(s->service_id)) {
+    log_warn(LD_CONFIG, "Ephemeral Hidden Service id collides with an "
+             "existing service.");
+    goto err;
+  }
 
   /* Do the rest of the initialization, now that the key has been validated. */
   s->intro_period_started = time(NULL);
   s->n_intro_points_wanted = NUM_INTRO_POINTS_DEFAULT;
-  s->ports = smartlist_new();
   SMARTLIST_FOREACH(port_cfg_strs, const char*, cp, {
     rend_service_port_config_t *p = parse_port_config(cp);
     if (!cp) {
@@ -748,6 +753,7 @@ rend_service_add_ephemeral(crypto_pk_t *pk, const smartlist_t *port_cfg_strs)
 
   /* Initialize the service. */
   if (!rend_add_service(s)) {
+    log_debug(LD_CONFIG, "Added ephemeral hidden service: %s", s->service_id);
     return 0;
   }
 
@@ -1161,6 +1167,20 @@ rend_service_get_by_pk_digest(const char* digest)
   SMARTLIST_FOREACH(rend_service_list, rend_service_t*, s,
                     if (tor_memeq(s->pk_digest,digest,DIGEST_LEN))
                         return s);
+  return NULL;
+}
+
+/** Return the service whose service id is <b>id</b>, or NULL if no such
+ * service exists.
+ */
+static struct rend_service_t *
+rend_service_get_by_service_id(const char *id)
+{
+  tor_assert(strlen(id) == REND_SERVICE_ID_LEN_BASE32);
+  SMARTLIST_FOREACH(rend_service_list, rend_service_t*, s, {
+    if (tor_memeq(s->service_id, id, REND_SERVICE_ID_LEN_BASE32))
+      return s;
+  });
   return NULL;
 }
 
