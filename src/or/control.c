@@ -3286,10 +3286,10 @@ handle_control_add_eph_hs(control_connection_t *conn,
   } else {
     /*
      * Can't tell if this is some rendservice error or a bad port_cfg,
-     * too bad, so sad, read the logs.
+     * too bad, so sad, read the logs.  rend_service_add_ephemeral will
+     * free the pk from rend_service_free().
      */
     connection_printf_to_buf(conn, "551 Failed to add hidden service\r\n");
-    crypto_pk_free(pk);
   }
   SMARTLIST_FOREACH(port_cfg, char *, cp, tor_free(cp));
   smartlist_free(port_cfg);
