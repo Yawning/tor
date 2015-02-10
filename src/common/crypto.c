@@ -1397,6 +1397,36 @@ crypto_pk_get_hashed_fingerprint(crypto_pk_t *pk, char *fp_out)
   return 0;
 }
 
+/** Given a string containing the Base64 encoded DER representation of the
+ * private key <b>str</b>, decode and return the result on success, or NULL
+ * on failure.
+ */
+crypto_pk_t *
+crypto_pk_base64_decode(const char *str, size_t len)
+{
+  crypto_pk_t *pk = NULL;
+
+  char *der = tor_malloc_zero(len + 1);
+  size_t der_len = base64_decode(der, len, str, len);
+  if (der_len < 0) {
+    log_warn(LD_CRYPTO, "Stored DER RSA private key seems corrupted (base64).");
+    goto out;
+  }
+
+  const unsigned char *dp = (unsigned char*)der; /* Shut the compiler up. */
+  RSA *rsa = d2i_RSAPrivateKey(NULL, &dp, der_len);
+  if (!rsa) {
+    crypto_log_errors(LOG_WARN,"decoding private key");
+    goto out;
+  }
+  pk = crypto_new_pk_from_rsa_(rsa);
+
+out:
+  memwipe(der, 0, der_len);
+  tor_free(der);
+  return pk;
+}
+
 /* symmetric crypto */
 
 /** Return a pointer to the key set for the cipher in <b>env</b>.

@@ -36,6 +36,7 @@
 #include "networkstatus.h"
 #include "nodelist.h"
 #include "policies.h"
+#include "rendservice.h"
 #include "reasons.h"
 #include "rephist.h"
 #include "router.h"
@@ -156,6 +157,8 @@ static int handle_control_resolve(control_connection_t *conn, uint32_t len,
                                   const char *body);
 static int handle_control_usefeature(control_connection_t *conn,
                                      uint32_t len,
+                                     const char *body);
+static int handle_control_add_eph_hs(control_connection_t *conn, uint32_t len,
                                      const char *body);
 static int write_stream_target_to_buf(entry_connection_t *conn, char *buf,
                                       size_t len);
@@ -3211,6 +3214,96 @@ handle_control_dropguards(control_connection_t *conn,
   return 0;
 }
 
+/** Called when we get a ADD_EPH_HS command; parse the body, and set up
+ * the new ephemeral Hidden Service. */
+static int
+handle_control_add_eph_hs(control_connection_t *conn,
+                          uint32_t len,
+                          const char *body)
+{
+  smartlist_t *args;
+  size_t arg_len;
+  (void) len; /* body is nul-terminated; it's safe to ignore the length */
+  args = smartlist_new();
+  smartlist_split_string(args, body, " ",
+                         SPLIT_SKIP_SPACE|SPLIT_IGNORE_BLANK, 0);
+  arg_len = smartlist_len(args);
+
+  /*
+   * Reject pathologically malformed argument lists.
+   *  * Insufficient entries to ever be valid, needs keyType, key, and at
+   *    least one VIRTPORT/TARGET pair.
+   *  * A odd number of arguments is wrong because VIRTPORT/TARGET pairs
+   *    are pairs.
+   */
+  if (arg_len < 4 || arg_len & 1) {
+    connection_printf_to_buf(conn, "512 Arguments clearly malformed\r\n");
+    goto out;
+  }
+
+  /*
+   * Parse the key type and ASCII serialized private key.
+   *  * "RSA1024" - Base64 encoded PKCS#1-style DER encoded private key.
+   *  * "Ed25519" - Some day, when it's actually implemented.
+   */
+  const char *key_type = smartlist_get(args, 0);
+  const char *pk_str = smartlist_get(args, 1);
+  const size_t pk_str_len = strlen(pk_str);
+  crypto_pk_t *pk;
+  if (!strcasecmp("RSA1024", key_type)) {
+    pk = crypto_pk_base64_decode(pk_str, pk_str_len);
+    if (!pk) {
+      connection_printf_to_buf(conn, "512 Failed to decode RSA key\r\n");
+      goto out;
+    }
+    /* XXX: Ensure that the key is actually 1024 bits? */
+  } else {
+    /* This is deliberately vague to avoid potentially echoing pk_str. */
+    connection_printf_to_buf(conn, "513 Invalid key type\r\n");
+    goto out;
+  }
+
+  /*
+   * Ok, the rest of the arguments are the "VIRTPORT TARGET" pairs.
+   * Rejoin all the arguments into "VIRTPORT TARGET" strings, and add them
+   * into a smartlist to pass off to the HS code.
+   */
+  smartlist_t *port_cfg = smartlist_new();
+  for (int i = 2; i < arg_len; i += 2) {
+    const char *virtport = smartlist_get(args, i);
+    const char *target = smartlist_get(args, i + 1);
+
+    size_t cfg_buf_len = strlen(virtport) + 1 + strlen(target) + 1;
+    char *cfg_buf = tor_malloc_zero(cfg_buf_len);
+    tor_snprintf(cfg_buf, cfg_buf_len, "%s %s", virtport, target);
+
+    smartlist_add(port_cfg, cfg_buf);
+  }
+
+  /* Create the HS, using private key pk, and port config port_cfg. */
+  if (!rend_service_add_ephemeral(pk, port_cfg)) {
+    send_control_done(conn); /* XXX: Be more informative? */
+  } else {
+    /*
+     * Can't tell if this is some rendservice error or a bad port_cfg,
+     * too bad, so sad, read the logs.
+     */
+    connection_printf_to_buf(conn, "551 Failed to add hidden service\r\n");
+    crypto_pk_free(pk);
+  }
+  SMARTLIST_FOREACH(port_cfg, char *, cp, tor_free(cp));
+  smartlist_free(port_cfg);
+
+out:
+  /* Sanitize and free all the smartlist entries. */
+  SMARTLIST_FOREACH(args, char *, cp, {
+    memwipe(cp, 0, strlen(cp));
+    tor_free(cp);
+  });
+  smartlist_free(args);
+  return 0;
+}
+
 /** Called when <b>conn</b> has no more bytes left on its outbuf. */
 int
 connection_control_finished_flushing(control_connection_t *conn)
@@ -3507,6 +3600,11 @@ connection_control_process_inbuf(control_connection_t *conn)
       return -1;
   } else if (!strcasecmp(conn->incoming_cmd, "DROPGUARDS")) {
     if (handle_control_dropguards(conn, cmd_data_len, args))
+      return -1;
+  } else if (!strcasecmp(conn->incoming_cmd, "ADD_EPH_HS")) {
+    int ret = handle_control_add_eph_hs(conn, cmd_data_len, args);
+    memwipe(args, 0, cmd_data_len); /* Scrub the private key. */
+    if (ret)
       return -1;
   } else {
     connection_printf_to_buf(conn, "510 Unrecognized command \"%s\"\r\n",

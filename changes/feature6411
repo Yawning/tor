@@ -1,0 +1,3 @@
+  o Minor features (controller):
+    - Add the ADD_EPH_HS command that allows creation of hidden services
+      via the controller. Closes ticket 6411.
