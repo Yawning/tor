@@ -42,9 +42,15 @@ static int intro_point_accepted_intro_count(rend_intro_point_t *intro);
 static int intro_point_should_expire_now(rend_intro_point_t *intro,
                                          time_t now);
 struct rend_service_t;
+static int rend_service_derive_key_digests(struct rend_service_t *s);
 static int rend_service_load_keys(struct rend_service_t *s);
 static int rend_service_load_auth_keys(struct rend_service_t *s,
                                        const char *hfname);
+static struct rend_service_t *rend_service_get_by_pk_digest(
+    const char* digest);
+static struct rend_service_t *rend_service_get_by_service_id(const char *id);
+static const char *rend_service_escaped_dir(
+    const struct rend_service_t *s);
 
 static ssize_t rend_service_parse_intro_for_v0_or_v1(
     rend_intro_cell_t *intro,
@@ -141,6 +147,14 @@ typedef struct rend_service_t {
   int allow_unknown_ports;
 } rend_service_t;
 
+/** Returns a escaped string representation of the service, <b>s</b>.
+ */
+static const char *
+rend_service_escaped_dir(const struct rend_service_t *s)
+{
+  return (s->directory) ? escaped(s->directory) : "[EPHEMERAL]";
+}
+
 /** A list of rend_service_t's for services run on this OP.
  */
 static smartlist_t *rend_service_list = NULL;
@@ -233,7 +247,7 @@ rend_service_free_all(void)
 
 /** Validate <b>service</b> and add it to rend_service_list if possible.
  */
-static void
+static int
 rend_add_service(rend_service_t *service)
 {
   int i;
@@ -245,16 +259,17 @@ rend_add_service(rend_service_t *service)
       smartlist_len(service->clients) == 0) {
     log_warn(LD_CONFIG, "Hidden service (%s) with client authorization but no "
                         "clients; ignoring.",
-             escaped(service->directory));
+             rend_service_escaped_dir(service));
     rend_service_free(service);
-    return;
+    return -1;
   }
 
   if (!smartlist_len(service->ports)) {
     log_warn(LD_CONFIG, "Hidden service (%s) with no ports configured; "
              "ignoring.",
-             escaped(service->directory));
+             rend_service_escaped_dir(service));
     rend_service_free(service);
+    return -1;
   } else {
     int dupe = 0;
     /* XXX This duplicate check has two problems:
@@ -272,14 +287,17 @@ rend_add_service(rend_service_t *service)
      * lock file.  But this is enough to detect a simple mistake that
      * at least one person has actually made.
      */
-    SMARTLIST_FOREACH(rend_service_list, rend_service_t*, ptr,
-                      dupe = dupe ||
-                             !strcmp(ptr->directory, service->directory));
-    if (dupe) {
-      log_warn(LD_REND, "Another hidden service is already configured for "
-               "directory %s, ignoring.", service->directory);
-      rend_service_free(service);
-      return;
+    if (service->directory != NULL) { /* Skip dupe for ephemeral services. */
+      SMARTLIST_FOREACH(rend_service_list, rend_service_t*, ptr,
+                        dupe = dupe ||
+                               !strcmp(ptr->directory, service->directory));
+      if (dupe) {
+        log_warn(LD_REND, "Another hidden service is already configured for "
+                 "directory %s, ignoring.",
+                 rend_service_escaped_dir(service));
+        rend_service_free(service);
+        return -1;
+      }
     }
     smartlist_add(rend_service_list, service);
     log_debug(LD_REND,"Configuring service with directory \"%s\"",
@@ -305,7 +323,9 @@ rend_add_service(rend_service_t *service)
 #endif /* defined(HAVE_SYS_UN_H) */
       }
     }
+    return 0;
   }
+  /* NOTREACHED */
 }
 
 /** Return a new rend_service_port_config_t with its path set to
@@ -632,6 +652,18 @@ rend_config_services(const or_options_t *options, int validate_only)
   if (old_service_list && !validate_only) {
     smartlist_t *surviving_services = smartlist_new();
 
+    /* Pull all the ephemeral services out of old_service_list and add them
+     * into rend_service_list so they remain active and surviving_service_list
+     * so the intro points don't get closed.
+     */
+    SMARTLIST_FOREACH(old_service_list, rend_service_t *, old, {
+      if (!old->directory) {
+        SMARTLIST_DEL_CURRENT(old_service_list, old);
+        smartlist_add(surviving_services, old);
+        smartlist_add(rend_service_list, old);
+      }
+    });
+
     /* Copy introduction points to new services. */
     /* XXXX This is O(n^2), but it's only called on reconfigure, so it's
      * probably ok? */
@@ -681,6 +713,117 @@ rend_config_services(const or_options_t *options, int validate_only)
                       rend_service_free(ptr));
     smartlist_free(old_service_list);
   }
+
+  return 0;
+}
+
+/** Add the ephemeral service <b>pk</b>/<b>port_cfg_strs</b> if possible.
+ */
+int
+rend_service_add_ephemeral(crypto_pk_t *pk,
+                           const smartlist_t *port_cfg_strs,
+                           char **service_id_out)
+{
+  *service_id_out = NULL;
+
+  /* Allocate the service structure, and initialize the key, and key derived
+   * parameters.
+   */
+  rend_service_t *s = tor_malloc_zero(sizeof(rend_service_t));
+  s->directory = NULL; /* This indicates the service is ephemeral. */
+  s->private_key = pk;
+  s->auth_type = REND_NO_AUTH;
+  s->ports = smartlist_new();
+  if (rend_service_derive_key_digests(s)<0) {
+    rend_service_free(s);
+    return -1;
+  }
+
+  /* Enforcing pk/id uniqueness should be done by rend_service_load_keys(), but
+   * it's not, see #14828.
+   */
+  if (rend_service_get_by_pk_digest(s->pk_digest)) {
+    log_warn(LD_CONFIG, "Onion Service private key collides with an "
+             "existing service.");
+    rend_service_free(s);
+    return -2;
+  }
+  if (rend_service_get_by_service_id(s->service_id)) {
+    log_warn(LD_CONFIG, "Onion Service id collides with an existing service.");
+    rend_service_free(s);
+    return -2;
+  }
+
+  /* Do the rest of the initialization, now that the key has been validated. */
+  s->intro_period_started = time(NULL);
+  s->n_intro_points_wanted = NUM_INTRO_POINTS_DEFAULT;
+  SMARTLIST_FOREACH(port_cfg_strs, const char*, cp, {
+    rend_service_port_config_t *p = parse_port_config(cp);
+    if (!cp) {
+      rend_service_free(s);
+      return -3;
+    }
+    smartlist_add(s->ports, p);
+  });
+
+  /* Initialize the service. */
+  if (rend_add_service(s)) {
+    rend_service_free(s);
+    return -4;
+  }
+  *service_id_out = tor_strdup(s->service_id);
+
+  log_debug(LD_CONFIG, "Added ephemeral Onion Service: %s", s->service_id);
+  return 0;
+}
+
+/** Remove the ephemeral service <b>service_id</b> if possible.
+ */
+int
+rend_service_del_ephemeral(const char *service_id)
+{
+  rend_service_t *s;
+  if (!rend_valid_service_id(service_id)){
+    log_warn(LD_CONFIG, "Requested malformed Onion Service id for removal.");
+    return -1;
+  }
+  if ((s = rend_service_get_by_service_id(service_id)) == NULL) {
+    log_warn(LD_CONFIG, "Requested non-existent Onion Service id for "
+             "removal.");
+    return -1;
+  }
+  if (s->directory) {
+    log_warn(LD_CONFIG, "Requested non-ephemeral Onion Service for removal.");
+    return -1;
+  }
+
+  /* Kill the intro point circuit for the Onion Service, and remove it from
+   * the list.  Closing existing connections is the application's problem.
+   *
+   * XXX: As with the comment in rend_config_services(), a nice abstraction
+   * would be ideal here, but for now just duplicate the code.
+   */
+  SMARTLIST_FOREACH_BEGIN(circuit_get_global_list(), circuit_t *, circ) {
+    if (!circ->marked_for_close &&
+        circ->state == CIRCUIT_STATE_OPEN &&
+        (circ->purpose == CIRCUIT_PURPOSE_S_ESTABLISH_INTRO ||
+         circ->purpose == CIRCUIT_PURPOSE_S_INTRO)) {
+      origin_circuit_t *oc = TO_ORIGIN_CIRCUIT(circ);
+      tor_assert(oc->rend_data);
+      if (!tor_memeq(s->pk_digest, oc->rend_data->rend_pk_digest, DIGEST_LEN))
+        continue;
+      log_debug(LD_REND, "Closing intro point %s for service %s.",
+                safe_str_client(extend_info_describe(
+                                          oc->build_state->chosen_exit)),
+                oc->rend_data->onion_address);
+      circuit_mark_for_close(circ, END_CIRC_REASON_FINISHED);
+    }
+  }
+  SMARTLIST_FOREACH_END(circ);
+  smartlist_remove(rend_service_list, s);
+  rend_service_free(s);
+
+  log_debug(LD_CONFIG, "Removed ephemeral Onion Service: %s", service_id);
 
   return 0;
 }
@@ -769,6 +912,7 @@ rend_service_add_filenames_to_list(smartlist_t *lst, const rend_service_t *s)
 {
   tor_assert(lst);
   tor_assert(s);
+  tor_assert(s->directory);
   smartlist_add_asprintf(lst, "%s"PATH_SEPARATOR"private_key",
                          s->directory);
   smartlist_add_asprintf(lst, "%s"PATH_SEPARATOR"hostname",
@@ -787,9 +931,29 @@ rend_services_add_filenames_to_lists(smartlist_t *open_lst,
   if (!rend_service_list)
     return;
   SMARTLIST_FOREACH_BEGIN(rend_service_list, rend_service_t *, s) {
-    rend_service_add_filenames_to_list(open_lst, s);
-    smartlist_add(stat_lst, tor_strdup(s->directory));
+    if (s->directory) {
+      rend_service_add_filenames_to_list(open_lst, s);
+      smartlist_add(stat_lst, tor_strdup(s->directory));
+    }
   } SMARTLIST_FOREACH_END(s);
+}
+
+/** Derive all rend_service_t internal material based on the service's key.
+ * Returns 0 on sucess, -1 on failure.
+ */
+static int
+rend_service_derive_key_digests(struct rend_service_t *s)
+{
+  if (rend_get_service_id(s->private_key, s->service_id)<0) {
+    log_warn(LD_BUG, "Internal error: couldn't encode service ID.");
+    return -1;
+  }
+  if (crypto_pk_get_digest(s->private_key, s->pk_digest)<0) {
+    log_warn(LD_BUG, "Couldn't compute hash of public key.");
+    return -1;
+  }
+
+  return 0;
 }
 
 /** Load and/or generate private keys for the hidden service <b>s</b>,
@@ -830,15 +994,10 @@ rend_service_load_keys(rend_service_t *s)
   if (!s->private_key)
     return -1;
 
+  if (rend_service_derive_key_digests(s) < 0)
+    return -1;
+
   /* Create service file */
-  if (rend_get_service_id(s->private_key, s->service_id)<0) {
-    log_warn(LD_BUG, "Internal error: couldn't encode service ID.");
-    return -1;
-  }
-  if (crypto_pk_get_digest(s->private_key, s->pk_digest)<0) {
-    log_warn(LD_BUG, "Couldn't compute hash of public key.");
-    return -1;
-  }
   if (strlcpy(fname,s->directory,sizeof(fname)) >= sizeof(fname) ||
       strlcat(fname,PATH_SEPARATOR"hostname",sizeof(fname))
       >= sizeof(fname)) {
@@ -1077,6 +1236,20 @@ rend_service_get_by_pk_digest(const char* digest)
   SMARTLIST_FOREACH(rend_service_list, rend_service_t*, s,
                     if (tor_memeq(s->pk_digest,digest,DIGEST_LEN))
                         return s);
+  return NULL;
+}
+
+/** Return the service whose service id is <b>id</b>, or NULL if no such
+ * service exists.
+ */
+static struct rend_service_t *
+rend_service_get_by_service_id(const char *id)
+{
+  tor_assert(strlen(id) == REND_SERVICE_ID_LEN_BASE32);
+  SMARTLIST_FOREACH(rend_service_list, rend_service_t*, s, {
+    if (tor_memeq(s->service_id, id, REND_SERVICE_ID_LEN_BASE32))
+      return s;
+  });
   return NULL;
 }
 

@@ -1,0 +1,4 @@
+  o Minor features (controller):
+    - Add the ADD_ONION, DEL_ONION, and GET_ONIONS commands that allows the
+      creation and management of hidden services via the controller.  Closes
+      ticket 6411.

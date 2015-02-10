@@ -1397,6 +1397,81 @@ crypto_pk_get_hashed_fingerprint(crypto_pk_t *pk, char *fp_out)
   return 0;
 }
 
+/** Given a crypto_pk_t <b>pk</b>, allocate a new buffer containing the
+ * Base64 encoding of the DER representation of the private key as a NUL
+ * terminated string, and return it via <b>priv_out</b>.  Return 0 on
+ * sucess, -1 on failure.
+ *
+ * It is the caller's responsibility to sanitize and free the resulting buffer.
+ */
+int
+crypto_pk_base64_encode(const crypto_pk_t *pk, char **priv_out)
+{
+  unsigned char *der = NULL;
+  int der_len;
+  int ret = -1;
+
+  *priv_out = NULL;
+
+  der_len = i2d_RSAPrivateKey(pk->key, &der);
+  if (der_len < 0 || der == NULL)
+    return ret;
+
+  char *priv = tor_calloc(der_len, 2);
+  if (base64_encode(priv, der_len * 2, (char *)der, der_len) >= 0) {
+    tor_strstrip(priv, "\r\n");
+    size_t priv_len = strlen(priv);
+    memwipe(priv + priv_len, 0, 2 * der_len - priv_len);
+    *priv_out = priv;
+    ret = 0;
+  } else {
+    tor_free(priv);
+  }
+
+  memwipe(der, 0, der_len);
+  OPENSSL_free(der);
+  return ret;
+}
+
+
+/** Given a string containing the Base64 encoded DER representation of the
+ * private key <b>str</b>, decode and return the result on success, or NULL
+ * on failure.
+ */
+crypto_pk_t *
+crypto_pk_base64_decode(const char *str, size_t len)
+{
+  crypto_pk_t *pk = NULL;
+
+  char *der = tor_malloc_zero(len + 1);
+  size_t der_len = base64_decode(der, len, str, len);
+  if (der_len == 0) {
+    log_warn(LD_CRYPTO, "Stored DER RSA private key seems corrupted (base64).");
+    goto out;
+  }
+
+  const unsigned char *dp = (unsigned char*)der; /* Shut the compiler up. */
+  RSA *rsa = d2i_RSAPrivateKey(NULL, &dp, der_len);
+  if (!rsa) {
+    crypto_log_errors(LOG_WARN, "decoding private key");
+    goto out;
+  }
+
+  pk = crypto_new_pk_from_rsa_(rsa);
+
+  /* Make sure it's valid. */
+  if (crypto_pk_check_key(pk) <= 0) {
+    crypto_pk_free(pk);
+    pk = NULL;
+    goto out;
+  }
+
+out:
+  memwipe(der, 0, der_len);
+  tor_free(der);
+  return pk;
+}
+
 /* symmetric crypto */
 
 /** Return a pointer to the key set for the cipher in <b>env</b>.
