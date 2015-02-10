@@ -762,6 +762,59 @@ err:
   return -1;
 }
 
+/** Remove the ephemeral service <b>service_id</b> if possible.
+ */
+int
+rend_service_del_ephemeral(const char *service_id)
+{
+  rend_service_t *s;
+  if (strlen(service_id) != REND_SERVICE_ID_LEN_BASE32) {
+    log_warn(LD_CONFIG, "Requested malformed Ephemeral Hidden Service id "
+             "for removal.");
+    return -1;
+  }
+  if ((s = rend_service_get_by_service_id(service_id)) == NULL) {
+    log_warn(LD_CONFIG, "Requested non-existent Ephemeral Hidden Service id "
+             "for removal.");
+    return -1;
+  }
+  if (s->directory) {
+    log_warn(LD_CONFIG, "Requested non-Ephemeral Hidden Service for removal.");
+    return -1;
+  }
+
+  /*
+   * Kill the intro point circuit for the hidden service, and remove it from
+   * the list.  Closing existing connections is the application's problem.
+   *
+   * XXX: As with the comment in rend_config_services(), a nice abstraction
+   * would be ideal here, but for now just duplicate the code.
+   */
+  SMARTLIST_FOREACH_BEGIN(circuit_get_global_list(), circuit_t *, circ) {
+    if (!circ->marked_for_close &&
+        circ->state == CIRCUIT_STATE_OPEN &&
+        (circ->purpose == CIRCUIT_PURPOSE_S_ESTABLISH_INTRO ||
+         circ->purpose == CIRCUIT_PURPOSE_S_INTRO)) {
+      origin_circuit_t *oc = TO_ORIGIN_CIRCUIT(circ);
+      tor_assert(oc->rend_data);
+      if (!tor_memeq(s->pk_digest, oc->rend_data->rend_pk_digest, DIGEST_LEN))
+        continue;
+      log_debug(LD_REND, "Closing intro point %s for service %s.",
+                safe_str_client(extend_info_describe(
+                                          oc->build_state->chosen_exit)),
+                oc->rend_data->onion_address);
+      circuit_mark_for_close(circ, END_CIRC_REASON_FINISHED);
+    }
+  }
+  SMARTLIST_FOREACH_END(circ);
+  smartlist_remove(rend_service_list, s);
+  rend_service_free(s);
+
+  log_debug(LD_CONFIG, "Removed ephemeral hidden service: %s", service_id);
+
+  return 0;
+}
+
 /** Replace the old value of <b>service</b>-\>desc with one that reflects
  * the other fields in service.
  */
@@ -1171,14 +1224,15 @@ rend_service_get_by_pk_digest(const char* digest)
 }
 
 /** Return the service whose service id is <b>id</b>, or NULL if no such
- * service exists.
+ * service exists.  The comparisons are case insensitive and NOT constant
+ * time.
  */
 static struct rend_service_t *
 rend_service_get_by_service_id(const char *id)
 {
   tor_assert(strlen(id) == REND_SERVICE_ID_LEN_BASE32);
   SMARTLIST_FOREACH(rend_service_list, rend_service_t*, s, {
-    if (tor_memeq(s->service_id, id, REND_SERVICE_ID_LEN_BASE32))
+    if (!strcasecmp(s->service_id, id))
       return s;
   });
   return NULL;

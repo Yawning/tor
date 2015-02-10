@@ -160,6 +160,8 @@ static int handle_control_usefeature(control_connection_t *conn,
                                      const char *body);
 static int handle_control_add_eph_hs(control_connection_t *conn, uint32_t len,
                                      const char *body);
+static int handle_control_del_eph_hs(control_connection_t *conn, uint32_t len,
+                                     const char *body);
 static int write_stream_target_to_buf(entry_connection_t *conn, char *buf,
                                       size_t len);
 static void orconn_target_get_name(char *buf, size_t len,
@@ -3304,6 +3306,30 @@ out:
   return 0;
 }
 
+/** Called when we get a DEL_EPH_HS command; parse the body, and remove
+ * the existing ephemeral Hidden Service. */
+static int
+handle_control_del_eph_hs(control_connection_t *conn,
+                          uint32_t len,
+                          const char *body)
+{
+  smartlist_t *args;
+  (void) len; /* body is nul-terminated; it's safe to ignore the length */
+  args = getargs_helper("DEL_EPH_HS", conn, body, 1, 1);
+  if (!args)
+    return 0;
+
+  if (!rend_service_del_ephemeral(smartlist_get(args, 0))) {
+    send_control_done(conn);
+  } else {
+    connection_printf_to_buf(conn, "551 Failed to remove hidden service\r\n");
+  }
+
+  SMARTLIST_FOREACH(args, char *, cp, tor_free(cp));
+  smartlist_free(args);
+  return 0;
+}
+
 /** Called when <b>conn</b> has no more bytes left on its outbuf. */
 int
 connection_control_finished_flushing(control_connection_t *conn)
@@ -3605,6 +3631,9 @@ connection_control_process_inbuf(control_connection_t *conn)
     int ret = handle_control_add_eph_hs(conn, cmd_data_len, args);
     memwipe(args, 0, cmd_data_len); /* Scrub the private key. */
     if (ret)
+      return -1;
+  } else if (!strcasecmp(conn->incoming_cmd, "DEL_EPH_HS")) {
+    if (handle_control_del_eph_hs(conn, cmd_data_len, args))
       return -1;
   } else {
     connection_printf_to_buf(conn, "510 Unrecognized command \"%s\"\r\n",
