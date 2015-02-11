@@ -1416,10 +1416,18 @@ crypto_pk_base64_decode(const char *str, size_t len)
   const unsigned char *dp = (unsigned char*)der; /* Shut the compiler up. */
   RSA *rsa = d2i_RSAPrivateKey(NULL, &dp, der_len);
   if (!rsa) {
-    crypto_log_errors(LOG_WARN,"decoding private key");
+    crypto_log_errors(LOG_WARN, "decoding private key");
     goto out;
   }
+
   pk = crypto_new_pk_from_rsa_(rsa);
+
+  /* Make sure it's valid. */
+  if (crypto_pk_check_key(pk) <= 0) {
+    crypto_pk_free(pk);
+    pk = NULL;
+    goto out;
+  }
 
 out:
   memwipe(der, 0, der_len);

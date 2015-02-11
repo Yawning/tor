@@ -3258,7 +3258,10 @@ handle_control_add_eph_hs(control_connection_t *conn,
       connection_printf_to_buf(conn, "512 Failed to decode RSA key\r\n");
       goto out;
     }
-    /* XXX: Ensure that the key is actually 1024 bits? */
+    if (crypto_pk_num_bits(pk) != PK_BYTES*8) {
+      connection_printf_to_buf(conn, "512 Wrong RSA key size\r\n");
+      goto out;
+    }
   } else {
     /* This is deliberately vague to avoid potentially echoing pk_str. */
     connection_printf_to_buf(conn, "513 Invalid key type\r\n");
