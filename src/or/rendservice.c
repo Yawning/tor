@@ -1224,8 +1224,7 @@ rend_service_get_by_pk_digest(const char* digest)
 }
 
 /** Return the service whose service id is <b>id</b>, or NULL if no such
- * service exists.  The comparisons are case insensitive and NOT constant
- * time.
+ * service exists.
  */
 static struct rend_service_t *
 rend_service_get_by_service_id(const char *id)
