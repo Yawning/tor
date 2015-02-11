@@ -3636,7 +3636,9 @@ connection_control_process_inbuf(control_connection_t *conn)
     if (ret)
       return -1;
   } else if (!strcasecmp(conn->incoming_cmd, "DEL_EPH_HS")) {
-    if (handle_control_del_eph_hs(conn, cmd_data_len, args))
+    int ret = handle_control_del_eph_hs(conn, cmd_data_len, args);
+    memwipe(args, 0, cmd_data_len); /* Scrub the service id. */
+    if (ret)
       return -1;
   } else {
     connection_printf_to_buf(conn, "510 Unrecognized command \"%s\"\r\n",
