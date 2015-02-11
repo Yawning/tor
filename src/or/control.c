@@ -3260,6 +3260,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
     }
     if (crypto_pk_num_bits(pk) != PK_BYTES*8) {
       connection_printf_to_buf(conn, "512 Wrong RSA key size\r\n");
+      crypto_pk_free(pk);
       goto out;
     }
   } else {
