@@ -651,14 +651,23 @@ rend_config_services(const or_options_t *options, int validate_only)
   if (old_service_list && !validate_only) {
     smartlist_t *surviving_services = smartlist_new();
 
+    /* Pull all the ephemeral services out of old_service_list and add them
+     * into rend_service_list so they remain active and surviving_service_list
+     * so the intro points don't get closed.
+     */
+    SMARTLIST_FOREACH(old_service_list, rend_service_t *, old, {
+      if (!old->directory) {
+        SMARTLIST_DEL_CURRENT(old_service_list, old);
+        smartlist_add(surviving_services, old);
+        smartlist_add(rend_service_list, old);
+      }
+    });
+
     /* Copy introduction points to new services. */
     /* XXXX This is O(n^2), but it's only called on reconfigure, so it's
      * probably ok? */
     SMARTLIST_FOREACH_BEGIN(rend_service_list, rend_service_t *, new) {
       SMARTLIST_FOREACH_BEGIN(old_service_list, rend_service_t *, old) {
-        if (!old->directory) { /* Jettison ALL ephemeral HSes on reload. */
-          continue;
-        }
         if (!strcmp(old->directory, new->directory)) {
           smartlist_add_all(new->intro_nodes, old->intro_nodes);
           smartlist_clear(old->intro_nodes);
