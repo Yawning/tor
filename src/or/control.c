@@ -3231,8 +3231,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
                          SPLIT_SKIP_SPACE|SPLIT_IGNORE_BLANK, 0);
   arg_len = smartlist_len(args);
 
-  /*
-   * Reject pathologically malformed argument lists.
+  /* Reject pathologically malformed argument lists.
    *  * Insufficient entries to ever be valid, needs keyType, key, and at
    *    least one VIRTPORT/TARGET pair.
    *  * A odd number of arguments is wrong because VIRTPORT/TARGET pairs
@@ -3243,8 +3242,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
     goto out;
   }
 
-  /*
-   * Parse the key type and ASCII serialized private key.
+  /* Parse the key type and ASCII serialized private key.
    *  * "RSA1024" - Base64 encoded PKCS#1-style DER encoded private key.
    *  * "Ed25519" - Some day, when it's actually implemented.
    */
@@ -3269,8 +3267,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
     goto out;
   }
 
-  /*
-   * Ok, the rest of the arguments are the "VIRTPORT TARGET" pairs.
+  /* Ok, the rest of the arguments are the "VIRTPORT TARGET" pairs.
    * Rejoin all the arguments into "VIRTPORT TARGET" strings, and add them
    * into a smartlist to pass off to the HS code.
    */
@@ -3290,8 +3287,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
   if (!rend_service_add_ephemeral(pk, port_cfg)) {
     send_control_done(conn); /* XXX: Be more informative? */
   } else {
-    /*
-     * Can't tell if this is some rendservice error or a bad port_cfg,
+    /* Can't tell if this is some rendservice error or a bad port_cfg,
      * too bad, so sad, read the logs.  rend_service_add_ephemeral will
      * free the pk from rend_service_free().
      */

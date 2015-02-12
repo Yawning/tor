@@ -721,8 +721,7 @@ rend_config_services(const or_options_t *options, int validate_only)
 int
 rend_service_add_ephemeral(crypto_pk_t *pk, const smartlist_t *port_cfg_strs)
 {
-  /*
-   * Allocate the service structure, and initialize the key, and key derived
+  /* Allocate the service structure, and initialize the key, and key derived
    * parameters.
    */
   rend_service_t *s = tor_malloc_zero(sizeof(rend_service_t));
@@ -734,8 +733,7 @@ rend_service_add_ephemeral(crypto_pk_t *pk, const smartlist_t *port_cfg_strs)
     goto err;
   }
 
-  /*
-   * Enforcing pk/id uniqueness should be done by rend_service_load_keys(), but
+  /* Enforcing pk/id uniqueness should be done by rend_service_load_keys(), but
    * it's not, see #14828.
    */
   if (rend_service_get_by_pk_digest(s->pk_digest)) {
@@ -792,8 +790,7 @@ rend_service_del_ephemeral(const char *service_id)
     return -1;
   }
 
-  /*
-   * Kill the intro point circuit for the hidden service, and remove it from
+  /* Kill the intro point circuit for the hidden service, and remove it from
    * the list.  Closing existing connections is the application's problem.
    *
    * XXX: As with the comment in rend_config_services(), a nice abstraction
