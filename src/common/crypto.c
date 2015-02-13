@@ -1420,6 +1420,8 @@ crypto_pk_base64_encode(const crypto_pk_t *pk, char **priv_out)
   char *priv = tor_calloc(der_len, 2);
   if (base64_encode(priv, der_len * 2, (char *)der, der_len) >= 0) {
     tor_strstrip(priv, "\r\n");
+    size_t priv_len = strlen(priv);
+    memwipe(priv + priv_len, 0, 2 * der_len - priv_len);
     *priv_out = priv;
     ret = 0;
   } else {
