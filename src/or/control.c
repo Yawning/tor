@@ -3298,11 +3298,16 @@ handle_control_add_eph_hs(control_connection_t *conn,
   /* Create the HS, using private key pk, and port config port_cfg.
    * rend_service_add_ephemeral() will destroy pk on failure.
    */
-  int ret = rend_service_add_ephemeral(pk, port_cfg);
+  char *service_id = NULL;
+  int ret = rend_service_add_ephemeral(pk, port_cfg, &service_id);
   switch (ret) {
   case 0:
-    /* XXX: Send the private key (if 'NEW') and the OnionAddr. */
+    tor_assert(service_id);
+    connection_printf_to_buf(conn, "250-ServiceID=%s\r\n", service_id);
+    /* TODO Send the private key (if 'NEW'). */
     send_control_done(conn);
+    memwipe(service_id, 0, strlen(service_id));
+    tor_free(service_id);
     break;
   case -1:
     connection_printf_to_buf(conn, "551 Failed to generate onion address\r\n");
@@ -3316,7 +3321,6 @@ handle_control_add_eph_hs(control_connection_t *conn,
   case -4: /* FALLSTHROUGH */
   default:
     connection_printf_to_buf(conn, "551 Failed to add hidden service\r\n");
-    break;
   }
   SMARTLIST_FOREACH(port_cfg, char *, cp, tor_free(cp));
   smartlist_free(port_cfg);

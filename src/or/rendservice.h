@@ -102,7 +102,8 @@ void rend_service_dump_stats(int severity);
 void rend_service_free_all(void);
 
 int rend_service_add_ephemeral(crypto_pk_t *pk,
-                               const smartlist_t *port_cfg_strs);
+                               const smartlist_t *port_cfg_strs,
+                               char **service_id_out);
 int rend_service_del_ephemeral(const char *service_id);
 
 #endif

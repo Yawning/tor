@@ -719,8 +719,12 @@ rend_config_services(const or_options_t *options, int validate_only)
 /** Add the ephemeral service <b>pk</b>/<b>port_cfg_strs</b> if possible.
  */
 int
-rend_service_add_ephemeral(crypto_pk_t *pk, const smartlist_t *port_cfg_strs)
+rend_service_add_ephemeral(crypto_pk_t *pk,
+                           const smartlist_t *port_cfg_strs,
+                           char **service_id_out)
 {
+  *service_id_out = NULL;
+
   /* Allocate the service structure, and initialize the key, and key derived
    * parameters.
    */
@@ -767,6 +771,7 @@ rend_service_add_ephemeral(crypto_pk_t *pk, const smartlist_t *port_cfg_strs)
     rend_service_free(s);
     return -4;
   }
+  *service_id_out = tor_strdup(s->service_id);
 
   log_debug(LD_CONFIG, "Added ephemeral hidden service: %s", s->service_id);
   return 0;
