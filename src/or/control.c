@@ -3233,7 +3233,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
 
   /* Sanity check that there are enough arguments. */
   if (arg_len < 1) {
-    connection_printf_to_buf(conn, "512 Missing keyType:keyBlob argument\r\n");
+    connection_printf_to_buf(conn, "512 Missing keyType/keyBlob argument\r\n");
     goto out;
   }
   if (arg_len < 3 || (arg_len & 1) == 0) {
@@ -3257,6 +3257,8 @@ handle_control_add_eph_hs(control_connection_t *conn,
   const char *key_blob = smartlist_get(key_args, 1);
   const size_t key_blob_len = strlen(key_blob);
   crypto_pk_t *pk = NULL;
+  const char *key_new_alg = NULL;
+  char *key_new_blob = NULL;
   if (!strcasecmp("RSA1024", key_type)) {
     /* Loading a pre-existing RSA1024 key. */
     pk = crypto_pk_base64_decode(key_blob, key_blob_len);
@@ -3272,10 +3274,17 @@ handle_control_add_eph_hs(control_connection_t *conn,
   } else if (!strcasecmp("NEW", key_type)) {
     /* Generating a new key, algorithm specified in the keyBlob. */
     if (!strcasecmp("RSA1024", key_blob) || !strcasecmp("BEST", key_blob)) {
+      /* "RSA1024", RSA 1024 bit, also currently "BEST" by default. */
       pk = crypto_pk_new();
       if (crypto_pk_generate_key(pk)) {
         crypto_pk_free(pk);
         connection_printf_to_buf(conn, "551 Failed to generate RSA key\r\n");
+        goto out_keyargs;
+      }
+      key_new_alg = "RSA1024";
+      if (crypto_pk_base64_encode(pk, &key_new_blob)) {
+        crypto_pk_free(pk);
+        connection_printf_to_buf(conn, "551 Failed to encode RSA key\r\n");
         goto out_keyargs;
       }
     } else {
@@ -3294,13 +3303,10 @@ handle_control_add_eph_hs(control_connection_t *conn,
    */
   smartlist_t *port_cfg = smartlist_new();
   for (size_t i = 1; i < arg_len; i += 2) {
+    char *cfg_buf = NULL;
     const char *virtport = smartlist_get(args, i);
     const char *target = smartlist_get(args, i + 1);
-
-    size_t cfg_buf_len = strlen(virtport) + 1 + strlen(target) + 1;
-    char *cfg_buf = tor_malloc_zero(cfg_buf_len);
-    tor_snprintf(cfg_buf, cfg_buf_len, "%s %s", virtport, target);
-
+    tor_asprintf(&cfg_buf, "%s %s", virtport, target);
     smartlist_add(port_cfg, cfg_buf);
   }
 
@@ -3311,13 +3317,32 @@ handle_control_add_eph_hs(control_connection_t *conn,
   int ret = rend_service_add_ephemeral(pk, port_cfg, &service_id);
   switch (ret) {
   case 0:
+  {
+    char *buf = NULL;
     tor_assert(service_id);
-    connection_printf_to_buf(conn, "250-ServiceID=%s\r\n", service_id);
-    /* TODO Send the private key (if 'NEW'). */
-    send_control_done(conn);
+    if (key_new_alg) {
+      tor_assert(key_new_blob);
+      tor_asprintf(&buf,
+                   "250-ServiceID=%s\r\n"
+                   "250-PrivateKey=%s:%s\r\n"
+                   "250 OK\r\n",
+                   service_id,
+                   key_new_alg,
+                   key_new_blob);
+    } else {
+      tor_asprintf(&buf,
+                   "250-ServiceID=%s\r\n"
+                   "250 OK\r\n",
+                   service_id);
+    }
     memwipe(service_id, 0, strlen(service_id));
     tor_free(service_id);
+
+    connection_write_str_to_buf(buf, conn);
+    memwipe(buf, 0, strlen(buf));
+    tor_free(buf);
     break;
+  }
   case -1:
     connection_printf_to_buf(conn, "551 Failed to generate onion address\r\n");
     break;
@@ -3330,6 +3355,10 @@ handle_control_add_eph_hs(control_connection_t *conn,
   case -4: /* FALLSTHROUGH */
   default:
     connection_printf_to_buf(conn, "551 Failed to add hidden service\r\n");
+  }
+  if (key_new_blob) {
+    memwipe(key_new_blob, 0, strlen(key_new_blob));
+    tor_free(key_new_blob);
   }
   SMARTLIST_FOREACH(port_cfg, char *, cp, tor_free(cp));
   smartlist_free(port_cfg);
