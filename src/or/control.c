@@ -3265,14 +3265,23 @@ handle_control_add_eph_hs(control_connection_t *conn,
       goto out_keyargs;
     }
     if (crypto_pk_num_bits(pk) != PK_BYTES*8) {
-      connection_printf_to_buf(conn, "512 Invalid RSA key size\r\n");
       crypto_pk_free(pk);
+      connection_printf_to_buf(conn, "512 Invalid RSA key size\r\n");
       goto out_keyargs;
     }
   } else if (!strcasecmp("NEW", key_type)) {
     /* Generating a new key, algorithm specified in the keyBlob. */
-    connection_printf_to_buf(conn, "551 Key generation not implemented yet\r\n");
-    goto out_keyargs;
+    if (!strcasecmp("RSA1024", key_blob) || !strcasecmp("BEST", key_blob)) {
+      pk = crypto_pk_new();
+      if (crypto_pk_generate_key(pk)) {
+        crypto_pk_free(pk);
+        connection_printf_to_buf(conn, "551 Failed to generate RSA key\r\n");
+        goto out_keyargs;
+      }
+    } else {
+      connection_printf_to_buf(conn, "513 Invalid key type\r\n");
+      goto out_keyargs;
+    }
   } else {
     /* This is deliberately vague to avoid potentially echoing keys. */
     connection_printf_to_buf(conn, "513 Invalid key type\r\n");
