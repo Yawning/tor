@@ -3367,7 +3367,10 @@ handle_control_del_eph_hs(control_connection_t *conn,
     connection_printf_to_buf(conn, "551 Failed to remove hidden service\r\n");
   }
 
-  SMARTLIST_FOREACH(args, char *, cp, tor_free(cp));
+  SMARTLIST_FOREACH(args, char *, cp, {
+    memwipe(cp, 0, strlen(cp));
+    tor_free(cp);
+  });
   smartlist_free(args);
   return 0;
 }
