@@ -3319,9 +3319,21 @@ handle_control_del_eph_hs(control_connection_t *conn,
   if (!args)
     return 0;
 
-  if (!rend_service_del_ephemeral(smartlist_get(args, 0))) {
+  int ret = rend_service_del_ephemeral(smartlist_get(args, 0));
+  switch (ret) {
+  case 0:
     send_control_done(conn);
-  } else {
+    break;
+  case -1:
+    connection_printf_to_buf(conn, "512 Malformed hidden service id\r\n");
+    break;
+  case -2:
+    connection_printf_to_buf(conn, "552 Unknown hidden service id\r\n");
+    break;
+  case -3:
+    connection_printf_to_buf(conn, "553 Non-ephemeral hidden service id\r\n");
+    break;
+  default:
     connection_printf_to_buf(conn, "551 Failed to remove hidden service\r\n");
   }
 

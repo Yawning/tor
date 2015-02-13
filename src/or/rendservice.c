@@ -783,11 +783,11 @@ rend_service_del_ephemeral(const char *service_id)
   if ((s = rend_service_get_by_service_id(service_id)) == NULL) {
     log_warn(LD_CONFIG, "Requested non-existent Ephemeral Hidden Service id "
              "for removal.");
-    return -1;
+    return -2;
   }
   if (s->directory) {
     log_warn(LD_CONFIG, "Requested non-Ephemeral Hidden Service for removal.");
-    return -1;
+    return -3;
   }
 
   /* Kill the intro point circuit for the hidden service, and remove it from
