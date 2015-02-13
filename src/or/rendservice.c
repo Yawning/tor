@@ -730,7 +730,8 @@ rend_service_add_ephemeral(crypto_pk_t *pk, const smartlist_t *port_cfg_strs)
   s->auth_type = REND_NO_AUTH;
   s->ports = smartlist_new();
   if (rend_service_load_keys(s)<0) {
-    goto err;
+    rend_service_free(s);
+    return -1;
   }
 
   /* Enforcing pk/id uniqueness should be done by rend_service_load_keys(), but
@@ -739,12 +740,14 @@ rend_service_add_ephemeral(crypto_pk_t *pk, const smartlist_t *port_cfg_strs)
   if (rend_service_get_by_pk_digest(s->pk_digest)) {
     log_warn(LD_CONFIG, "Ephemeral Hidden Service private key collides with "
             "an existing service.");
-    goto err;
+    rend_service_free(s);
+    return -2;
   }
   if (rend_service_get_by_service_id(s->service_id)) {
     log_warn(LD_CONFIG, "Ephemeral Hidden Service id collides with an "
              "existing service.");
-    goto err;
+    rend_service_free(s);
+    return -2;
   }
 
   /* Do the rest of the initialization, now that the key has been validated. */
@@ -753,20 +756,20 @@ rend_service_add_ephemeral(crypto_pk_t *pk, const smartlist_t *port_cfg_strs)
   SMARTLIST_FOREACH(port_cfg_strs, const char*, cp, {
     rend_service_port_config_t *p = parse_port_config(cp);
     if (!cp) {
-      goto err;
+      rend_service_free(s);
+      return -3;
     }
     smartlist_add(s->ports, p);
   });
 
   /* Initialize the service. */
-  if (!rend_add_service(s)) {
-    log_debug(LD_CONFIG, "Added ephemeral hidden service: %s", s->service_id);
-    return 0;
+  if (rend_add_service(s)) {
+    rend_service_free(s);
+    return -4;
   }
 
-err:
-  rend_service_free(s);
-  return -1;
+  log_debug(LD_CONFIG, "Added ephemeral hidden service: %s", s->service_id);
+  return 0;
 }
 
 /** Remove the ephemeral service <b>service_id</b> if possible.

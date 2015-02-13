@@ -3231,48 +3231,60 @@ handle_control_add_eph_hs(control_connection_t *conn,
                          SPLIT_SKIP_SPACE|SPLIT_IGNORE_BLANK, 0);
   arg_len = smartlist_len(args);
 
-  /* Reject pathologically malformed argument lists.
-   *  * Insufficient entries to ever be valid, needs keyType, key, and at
-   *    least one VIRTPORT/TARGET pair.
-   *  * A odd number of arguments is wrong because VIRTPORT/TARGET pairs
-   *    are pairs.
-   */
-  if (arg_len < 4 || arg_len & 1) {
-    connection_printf_to_buf(conn, "512 Arguments clearly malformed\r\n");
+  /* Sanity check that there are enough arguments. */
+  if (arg_len < 1) {
+    connection_printf_to_buf(conn, "512 Missing keyType:keyBlob argument\r\n");
+    goto out;
+  }
+  if (arg_len < 3 || (arg_len & 1) == 0) {
+    /* There must be at least one "VIRTPORT TARGET" pair, and they are paired,
+     * so there should be no trailing arguments (arg_len should be odd including
+     * the keyType:keyBlob).
+     */
+    connection_printf_to_buf(conn, "512 Invalid VIRTPORT/TARGET list\r\n");
     goto out;
   }
 
-  /* Parse the key type and ASCII serialized private key.
-   *  * "RSA1024" - Base64 encoded PKCS#1-style DER encoded private key.
-   *  * "Ed25519" - Some day, when it's actually implemented.
-   */
-  const char *key_type = smartlist_get(args, 0);
-  const char *pk_str = smartlist_get(args, 1);
-  const size_t pk_str_len = strlen(pk_str);
-  crypto_pk_t *pk;
+  /* Parse the "keyType:keyBlob" argument. */
+  smartlist_t *key_args = smartlist_new();
+  smartlist_split_string(key_args, smartlist_get(args, 0), ":",
+                         SPLIT_IGNORE_BLANK, 0);
+  if (smartlist_len(key_args) != 2) {
+    connection_printf_to_buf(conn, "512 Invalid key type/blob\r\n");
+    goto out_keyargs;
+  }
+  const char *key_type = smartlist_get(key_args, 0);
+  const char *key_blob = smartlist_get(key_args, 1);
+  const size_t key_blob_len = strlen(key_blob);
+  crypto_pk_t *pk = NULL;
   if (!strcasecmp("RSA1024", key_type)) {
-    pk = crypto_pk_base64_decode(pk_str, pk_str_len);
+    /* Loading a pre-existing RSA1024 key. */
+    pk = crypto_pk_base64_decode(key_blob, key_blob_len);
     if (!pk) {
       connection_printf_to_buf(conn, "512 Failed to decode RSA key\r\n");
-      goto out;
+      goto out_keyargs;
     }
     if (crypto_pk_num_bits(pk) != PK_BYTES*8) {
-      connection_printf_to_buf(conn, "512 Wrong RSA key size\r\n");
+      connection_printf_to_buf(conn, "512 Invalid RSA key size\r\n");
       crypto_pk_free(pk);
-      goto out;
+      goto out_keyargs;
     }
+  } else if (!strcasecmp("NEW", key_type)) {
+    /* Generating a new key, algorithm specified in the keyBlob. */
+    connection_printf_to_buf(conn, "551 Key generation not implemented yet\r\n");
+    goto out_keyargs;
   } else {
-    /* This is deliberately vague to avoid potentially echoing pk_str. */
+    /* This is deliberately vague to avoid potentially echoing keys. */
     connection_printf_to_buf(conn, "513 Invalid key type\r\n");
-    goto out;
+    goto out_keyargs;
   }
+  tor_assert(pk);
 
-  /* Ok, the rest of the arguments are the "VIRTPORT TARGET" pairs.
-   * Rejoin all the arguments into "VIRTPORT TARGET" strings, and add them
-   * into a smartlist to pass off to the HS code.
+  /* Parse the remaining arguments as "VIRTPORT TARGET" pairs, and rejoin them
+   * into strings understood by rendservice.c:parse_port_config().
    */
   smartlist_t *port_cfg = smartlist_new();
-  for (int i = 2; i < arg_len; i += 2) {
+  for (size_t i = 1; i < arg_len; i += 2) {
     const char *virtport = smartlist_get(args, i);
     const char *target = smartlist_get(args, i + 1);
 
@@ -3283,21 +3295,39 @@ handle_control_add_eph_hs(control_connection_t *conn,
     smartlist_add(port_cfg, cfg_buf);
   }
 
-  /* Create the HS, using private key pk, and port config port_cfg. */
-  if (!rend_service_add_ephemeral(pk, port_cfg)) {
-    send_control_done(conn); /* XXX: Be more informative? */
-  } else {
-    /* Can't tell if this is some rendservice error or a bad port_cfg,
-     * too bad, so sad, read the logs.  rend_service_add_ephemeral will
-     * free the pk from rend_service_free().
-     */
+  /* Create the HS, using private key pk, and port config port_cfg.
+   * rend_service_add_ephemeral() will destroy pk on failure.
+   */
+  int ret = rend_service_add_ephemeral(pk, port_cfg);
+  switch (ret) {
+  case 0:
+    /* XXX: Send the private key (if 'NEW') and the OnionAddr. */
+    send_control_done(conn);
+    break;
+  case -1:
+    connection_printf_to_buf(conn, "551 Failed to generate onion address\r\n");
+    break;
+  case -2:
+    connection_printf_to_buf(conn, "550 Onion address collision\r\n");
+    break;
+  case -3:
+    connection_printf_to_buf(conn, "512 Invalid VIRTPORT/TARGET\r\n");
+    break;
+  case -4: /* FALLSTHROUGH */
+  default:
     connection_printf_to_buf(conn, "551 Failed to add hidden service\r\n");
+    break;
   }
   SMARTLIST_FOREACH(port_cfg, char *, cp, tor_free(cp));
   smartlist_free(port_cfg);
 
+out_keyargs:
+  SMARTLIST_FOREACH(key_args, char *, cp, {
+    memwipe(cp, 0, strlen(cp));
+    tor_free(cp);
+  });
+  smartlist_free(key_args);
 out:
-  /* Sanitize and free all the smartlist entries. */
   SMARTLIST_FOREACH(args, char *, cp, {
     memwipe(cp, 0, strlen(cp));
     tor_free(cp);
@@ -3325,7 +3355,7 @@ handle_control_del_eph_hs(control_connection_t *conn,
     send_control_done(conn);
     break;
   case -1:
-    connection_printf_to_buf(conn, "512 Malformed hidden service id\r\n");
+    connection_printf_to_buf(conn, "512 Invalid hidden service id\r\n");
     break;
   case -2:
     connection_printf_to_buf(conn, "552 Unknown hidden service id\r\n");
