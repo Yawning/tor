@@ -3411,31 +3411,30 @@ handle_control_del_eph_hs(control_connection_t *conn,
     return 0;
 
   const char *service_id = smartlist_get(args, 0);
-  int ret = rend_service_del_ephemeral(service_id);
-  switch (ret) {
-  case 0:
-  {
-    /* Remove/scrub the service_id from the ephemeral_hidden_service list. */
-    int i = smartlist_string_pos(conn->ephemeral_hidden_services, service_id);
-    char *cp = smartlist_get(conn->ephemeral_hidden_services, i);
-    smartlist_del(conn->ephemeral_hidden_services, i);
-    tor_strclear(cp);
-    tor_free(cp);
-
-    send_control_done(conn);
-    break;
-  }
-  case -1:
-    connection_printf_to_buf(conn, "512 Invalid hidden service id\r\n");
-    break;
-  case -2:
+  int idx = smartlist_string_pos(conn->ephemeral_hidden_services, service_id);
+  if (idx == -1) {
+    /* Ephemeral hidden services are bound to the originating control
+     * connection, disavow knowledge of the HS if it does not belong to the
+     * connection that the `DEL_EPH_HS` command was issued on.
+     */
     connection_printf_to_buf(conn, "552 Unknown hidden service id\r\n");
-    break;
-  case -3:
-    connection_printf_to_buf(conn, "553 Non-ephemeral hidden service id\r\n");
-    break;
-  default:
-    connection_printf_to_buf(conn, "551 Failed to remove hidden service\r\n");
+  } else {
+    if (!rend_service_del_ephemeral(service_id)) {
+      /* Remove/scrub the service_id from the ephemeral_hidden_service list. */
+      char *cp = smartlist_get(conn->ephemeral_hidden_services, idx);
+      smartlist_del(conn->ephemeral_hidden_services, idx);
+      tor_strclear(cp);
+      tor_free(cp);
+
+      send_control_done(conn);
+    } else {
+      /* This should *NEVER* fail, since the service is on the list of eph. HSes
+       * belonging to this control connection.  XXX: Should this remove it from
+       * the list on failure?
+       */
+      tor_fragile_assert();
+      connection_printf_to_buf(conn, "552 Unknown hidden service id\r\n");
+    }
   }
 
   SMARTLIST_FOREACH(args, char *, cp, {
