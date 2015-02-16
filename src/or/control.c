@@ -3226,88 +3226,110 @@ handle_control_add_eph_hs(control_connection_t *conn,
   smartlist_t *args;
   size_t arg_len;
   (void) len; /* body is nul-terminated; it's safe to ignore the length */
-  args = smartlist_new();
-  smartlist_split_string(args, body, " ",
-                         SPLIT_SKIP_SPACE|SPLIT_IGNORE_BLANK, 0);
+  args = getargs_helper("ADD_EPH_HS", conn, body, 2, -1);
+  if (!args)
+    return 0;
   arg_len = smartlist_len(args);
 
-  /* Sanity check that there are enough arguments. */
-  if (arg_len < 1) {
-    connection_printf_to_buf(conn, "512 Missing keyType/keyBlob argument\r\n");
-    goto out;
-  }
-  if (arg_len < 3 || (arg_len & 1) == 0) {
-    /* There must be at least one "VIRTPORT TARGET" pair, and they are paired,
-     * so there should be no trailing arguments (arg_len should be odd including
-     * the keyType:keyBlob).
+  /* Parse the "Port=VIRTPORT[,TARGET]" args. */
+  smartlist_t *port_cfg = smartlist_new();
+  for (size_t i = 1; i < arg_len; i++) {
+    /* Expecting "Port=VIRTPORT[,TARGET]". */
+    static const char *prefix = "Port=";
+    const char *port_arg = smartlist_get(args, i);
+    if (strcasecmpstart(port_arg, prefix)) {
+      connection_printf_to_buf(conn, "512 Invalid 'Port' argument\r\n");
+      goto out;
+    }
+    port_arg += strlen(prefix); /* Skip the prefix. */
+
+    /* Convert the Port argument value into a form capable of being parsed by
+     * rendservice.c:parse_port_config(), and do some minor sanity checking.
      */
-    connection_printf_to_buf(conn, "512 Invalid VIRTPORT/TARGET list\r\n");
-    goto out;
+    char *port_str = tor_strdup(port_arg);
+    char *comma_pos;
+
+    smartlist_add(port_cfg, port_str); /* Always add, so cleanup is unified. */
+    int virtport = (int)tor_parse_long(port_str, 10, 1, 65536, NULL,
+                                       &comma_pos);
+    if (!virtport) {
+      /* That's odd, the argument body doesn't begin with a port. */
+      connection_printf_to_buf(conn, "512 Invalid VIRTPORT\r\n");
+      goto out;
+    } else if (*comma_pos == ',') {
+      /* The first comma if any is separating the VIRTPORT and TARGET. */
+      *comma_pos = ' ';
+    } else if (*comma_pos != '\0') { /* Missing ",TARGET" is ok. */
+      connection_printf_to_buf(conn, "512 Invalid VIRTPORT/TARGET\r\n");
+      goto out;
+    }
   }
 
-  /* Parse the "keyType:keyBlob" argument. */
+  /* Parse the "keytype:keyblob" argument. */
   smartlist_t *key_args = smartlist_new();
-  smartlist_split_string(key_args, smartlist_get(args, 0), ":",
-                         SPLIT_IGNORE_BLANK, 0);
-  if (smartlist_len(key_args) != 2) {
-    connection_printf_to_buf(conn, "512 Invalid key type/blob\r\n");
-    goto out_keyargs;
-  }
-  const char *key_type = smartlist_get(key_args, 0);
-  const char *key_blob = smartlist_get(key_args, 1);
-  const size_t key_blob_len = strlen(key_blob);
   crypto_pk_t *pk = NULL;
   const char *key_new_alg = NULL;
   char *key_new_blob = NULL;
-  if (!strcasecmp("RSA1024", key_type)) {
-    /* Loading a pre-existing RSA1024 key. */
-    pk = crypto_pk_base64_decode(key_blob, key_blob_len);
-    if (!pk) {
-      connection_printf_to_buf(conn, "512 Failed to decode RSA key\r\n");
-      goto out_keyargs;
+  int pk_ok = 0;
+  do {
+    smartlist_split_string(key_args, smartlist_get(args, 0), ":",
+                           SPLIT_IGNORE_BLANK, 0);
+    if (smartlist_len(key_args) != 2) {
+      connection_printf_to_buf(conn, "512 Invalid key type/blob\r\n");
+      break;
     }
-    if (crypto_pk_num_bits(pk) != PK_BYTES*8) {
-      crypto_pk_free(pk);
-      connection_printf_to_buf(conn, "512 Invalid RSA key size\r\n");
-      goto out_keyargs;
-    }
-  } else if (!strcasecmp("NEW", key_type)) {
-    /* Generating a new key, algorithm specified in the keyBlob. */
-    if (!strcasecmp("RSA1024", key_blob) || !strcasecmp("BEST", key_blob)) {
-      /* "RSA1024", RSA 1024 bit, also currently "BEST" by default. */
-      pk = crypto_pk_new();
-      if (crypto_pk_generate_key(pk)) {
-        crypto_pk_free(pk);
-        connection_printf_to_buf(conn, "551 Failed to generate RSA key\r\n");
-        goto out_keyargs;
+
+    const char *key_type = smartlist_get(key_args, 0);
+    const char *key_blob = smartlist_get(key_args, 1);
+    if (!strcasecmp("RSA1024", key_type)) {
+      /* Loading a pre-existing RSA1024 key. */
+      pk = crypto_pk_base64_decode(key_blob, strlen(key_blob));
+      if (!pk) {
+        connection_printf_to_buf(conn, "512 Failed to decode RSA key\r\n");
+        break;
       }
-      key_new_alg = "RSA1024";
-      if (crypto_pk_base64_encode(pk, &key_new_blob)) {
-        crypto_pk_free(pk);
-        connection_printf_to_buf(conn, "551 Failed to encode RSA key\r\n");
-        goto out_keyargs;
+      if (crypto_pk_num_bits(pk) != PK_BYTES*8) {
+        connection_printf_to_buf(conn, "512 Invalid RSA key size\r\n");
+        break;
+      }
+    } else if (!strcasecmp("NEW", key_type)) {
+      /* Generating a new key, algorithm specified in the keyBlob. */
+      if (!strcasecmp("RSA1024", key_blob) || !strcasecmp("BEST", key_blob)) {
+        /* "RSA1024", RSA 1024 bit, also currently "BEST" by default. */
+        pk = crypto_pk_new();
+        if (crypto_pk_generate_key(pk)) {
+          connection_printf_to_buf(conn, "551 Failed to generate RSA key\r\n");
+          break;
+        }
+        if (crypto_pk_base64_encode(pk, &key_new_blob)) {
+          connection_printf_to_buf(conn, "551 Failed to encode RSA key\r\n");
+          break;
+        }
+        key_new_alg = "RSA1024";
+      } else {
+        connection_printf_to_buf(conn, "513 Invalid key type\r\n");
+        break;
       }
     } else {
+      /* This is deliberately vague to avoid potentially echoing keys. */
       connection_printf_to_buf(conn, "513 Invalid key type\r\n");
-      goto out_keyargs;
+      break;
     }
-  } else {
-    /* This is deliberately vague to avoid potentially echoing keys. */
-    connection_printf_to_buf(conn, "513 Invalid key type\r\n");
-    goto out_keyargs;
-  }
-  tor_assert(pk);
 
-  /* Parse the remaining arguments as "VIRTPORT TARGET" pairs, and rejoin them
-   * into strings understood by rendservice.c:parse_port_config().
-   */
-  smartlist_t *port_cfg = smartlist_new();
-  for (size_t i = 1; i < arg_len; i += 2) {
-    char *cfg_buf = NULL;
-    const char *virtport = smartlist_get(args, i);
-    const char *target = smartlist_get(args, i + 1);
-    tor_asprintf(&cfg_buf, "%s %s", virtport, target);
-    smartlist_add(port_cfg, cfg_buf);
+    /* Succeded in either loading or generating a new key. */
+    tor_assert(pk);
+    pk_ok = 1;
+  } while(0);
+  SMARTLIST_FOREACH(key_args, char *, cp, {
+    tor_strclear(cp);
+    tor_free(cp);
+  });
+  smartlist_free(key_args);
+  if (!pk_ok) {
+    if (pk) {
+      crypto_pk_free(pk);
+    }
+    goto out;
   }
 
   /* Create the HS, using private key pk, and port config port_cfg.
@@ -3341,7 +3363,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
     smartlist_add(conn->ephemeral_hidden_services, service_id);
 
     connection_write_str_to_buf(buf, conn);
-    memwipe(buf, 0, strlen(buf));
+    tor_strclear(buf);
     tor_free(buf);
     break;
   }
@@ -3359,21 +3381,16 @@ handle_control_add_eph_hs(control_connection_t *conn,
     connection_printf_to_buf(conn, "551 Failed to add hidden service\r\n");
   }
   if (key_new_blob) {
-    memwipe(key_new_blob, 0, strlen(key_new_blob));
+    tor_strclear(key_new_blob);
     tor_free(key_new_blob);
   }
+
+out:
   SMARTLIST_FOREACH(port_cfg, char *, cp, tor_free(cp));
   smartlist_free(port_cfg);
 
-out_keyargs:
-  SMARTLIST_FOREACH(key_args, char *, cp, {
-    memwipe(cp, 0, strlen(cp));
-    tor_free(cp);
-  });
-  smartlist_free(key_args);
-out:
   SMARTLIST_FOREACH(args, char *, cp, {
-    memwipe(cp, 0, strlen(cp));
+    tor_strclear(cp);
     tor_free(cp);
   });
   smartlist_free(args);
@@ -3402,7 +3419,7 @@ handle_control_del_eph_hs(control_connection_t *conn,
     int i = smartlist_string_pos(conn->ephemeral_hidden_services, service_id);
     char *cp = smartlist_get(conn->ephemeral_hidden_services, i);
     smartlist_del(conn->ephemeral_hidden_services, i);
-    memwipe(cp, 0, strlen(cp));
+    tor_strclear(cp);
     tor_free(cp);
 
     send_control_done(conn);
@@ -3422,7 +3439,7 @@ handle_control_del_eph_hs(control_connection_t *conn,
   }
 
   SMARTLIST_FOREACH(args, char *, cp, {
-    memwipe(cp, 0, strlen(cp));
+    tor_strclear(cp);
     tor_free(cp);
   });
   smartlist_free(args);
