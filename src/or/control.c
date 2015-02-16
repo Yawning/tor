@@ -3335,8 +3335,10 @@ handle_control_add_eph_hs(control_connection_t *conn,
                    "250 OK\r\n",
                    service_id);
     }
-    memwipe(service_id, 0, strlen(service_id));
-    tor_free(service_id);
+    if (!conn->ephemeral_hidden_services) {
+      conn->ephemeral_hidden_services = smartlist_new();
+    }
+    smartlist_add(conn->ephemeral_hidden_services, service_id);
 
     connection_write_str_to_buf(buf, conn);
     memwipe(buf, 0, strlen(buf));
@@ -3391,11 +3393,21 @@ handle_control_del_eph_hs(control_connection_t *conn,
   if (!args)
     return 0;
 
-  int ret = rend_service_del_ephemeral(smartlist_get(args, 0));
+  const char *service_id = smartlist_get(args, 0);
+  int ret = rend_service_del_ephemeral(service_id);
   switch (ret) {
   case 0:
+  {
+    /* Remove/scrub the service_id from the ephemeral_hidden_service list. */
+    int i = smartlist_string_pos(conn->ephemeral_hidden_services, service_id);
+    char *cp = smartlist_get(conn->ephemeral_hidden_services, i);
+    smartlist_del(conn->ephemeral_hidden_services, i);
+    memwipe(cp, 0, strlen(cp));
+    tor_free(cp);
+
     send_control_done(conn);
     break;
+  }
   case -1:
     connection_printf_to_buf(conn, "512 Invalid hidden service id\r\n");
     break;
@@ -3462,6 +3474,15 @@ connection_control_closed(control_connection_t *conn)
 
   conn->event_mask = 0;
   control_update_global_event_mask();
+
+  /* Close all ephemeral hidden services if any.
+   * The list and it's contents are scrubbed/freed in connection_free_.
+   */
+  if (conn->ephemeral_hidden_services) {
+    SMARTLIST_FOREACH(conn->ephemeral_hidden_services, char *, cp, {
+      rend_service_del_ephemeral(cp);
+    });
+  }
 
   if (conn->is_owning_control_connection) {
     lost_owning_controller("connection", "closed");
