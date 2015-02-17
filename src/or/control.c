@@ -3321,7 +3321,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
     pk_ok = 1;
   } while(0);
   SMARTLIST_FOREACH(key_args, char *, cp, {
-    tor_strclear(cp);
+    memwipe(cp, 0, strlen(cp));
     tor_free(cp);
   });
   smartlist_free(key_args);
@@ -3363,7 +3363,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
     smartlist_add(conn->ephemeral_hidden_services, service_id);
 
     connection_write_str_to_buf(buf, conn);
-    tor_strclear(buf);
+    memwipe(buf, 0, strlen(buf));
     tor_free(buf);
     break;
   }
@@ -3381,7 +3381,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
     connection_printf_to_buf(conn, "551 Failed to add hidden service\r\n");
   }
   if (key_new_blob) {
-    tor_strclear(key_new_blob);
+    memwipe(key_new_blob, 0, strlen(key_new_blob));
     tor_free(key_new_blob);
   }
 
@@ -3390,7 +3390,7 @@ out:
   smartlist_free(port_cfg);
 
   SMARTLIST_FOREACH(args, char *, cp, {
-    tor_strclear(cp);
+    memwipe(cp, 0, strlen(cp));
     tor_free(cp);
   });
   smartlist_free(args);
@@ -3423,7 +3423,7 @@ handle_control_del_eph_hs(control_connection_t *conn,
       /* Remove/scrub the service_id from the ephemeral_hidden_service list. */
       char *cp = smartlist_get(conn->ephemeral_hidden_services, idx);
       smartlist_del(conn->ephemeral_hidden_services, idx);
-      tor_strclear(cp);
+      memwipe(cp, 0, strlen(cp));
       tor_free(cp);
 
       send_control_done(conn);
@@ -3438,7 +3438,7 @@ handle_control_del_eph_hs(control_connection_t *conn,
   }
 
   SMARTLIST_FOREACH(args, char *, cp, {
-    tor_strclear(cp);
+    memwipe(cp, 0, strlen(cp));
     tor_free(cp);
   });
   smartlist_free(args);
