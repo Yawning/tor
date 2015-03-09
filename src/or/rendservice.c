@@ -42,6 +42,7 @@ static int intro_point_accepted_intro_count(rend_intro_point_t *intro);
 static int intro_point_should_expire_now(rend_intro_point_t *intro,
                                          time_t now);
 struct rend_service_t;
+static int rend_service_derive_key_digests(struct rend_service_t *s);
 static int rend_service_load_keys(struct rend_service_t *s);
 static int rend_service_load_auth_keys(struct rend_service_t *s,
                                        const char *hfname);
@@ -733,7 +734,7 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
   s->private_key = pk;
   s->auth_type = REND_NO_AUTH;
   s->ports = smartlist_new();
-  if (rend_service_load_keys(s)<0) {
+  if (rend_service_derive_key_digests(s)<0) {
     rend_service_free(s);
     return -1;
   }
@@ -939,49 +940,12 @@ rend_services_add_filenames_to_lists(smartlist_t *open_lst,
   } SMARTLIST_FOREACH_END(s);
 }
 
-/** Load and/or generate private keys for the hidden service <b>s</b>,
- * possibly including keys for client authorization.  Return 0 on success, -1
- * on failure. */
+/** Derive all rend_service_t internal material based on the service's key.
+ * Returns 0 on sucess, -1 on failure.
+ */
 static int
-rend_service_load_keys(rend_service_t *s)
+rend_service_derive_key_digests(struct rend_service_t *s)
 {
-  char fname[512];
-
-  if (s->directory) {
-    cpd_check_t  check_opts = CPD_CREATE;
-
-    if (s->dir_group_readable) {
-      check_opts |= CPD_GROUP_READ;
-    }
-    /* Check/create directory */
-    if (check_private_dir(s->directory, check_opts, get_options()->User) < 0) {
-      return -1;
-    }
-#ifndef _WIN32
-    if (s->dir_group_readable) {
-      /* Only new dirs created get new opts, also enforce group read. */
-      if (chmod(s->directory, 0750)) {
-        log_warn(LD_FS,"Unable to make %s group-readable.", s->directory);
-      }
-    }
-#endif
-
-    /* Load key */
-    if (strlcpy(fname,s->directory,sizeof(fname)) >= sizeof(fname) ||
-        strlcat(fname,PATH_SEPARATOR"private_key",sizeof(fname))
-           >= sizeof(fname)) {
-      log_warn(LD_CONFIG, "Directory name too long to store key file: \"%s\".",
-               s->directory);
-      return -1;
-    }
-    s->private_key = init_key_from_file(fname, 1, LOG_ERR, 0);
-    if (!s->private_key)
-      return -1;
-  } else {
-    tor_assert(s->private_key);
-    tor_assert(s->auth_type == REND_NO_AUTH);
-  }
-
   if (rend_get_service_id(s->private_key, s->service_id)<0) {
     log_warn(LD_BUG, "Internal error: couldn't encode service ID.");
     return -1;
@@ -991,40 +955,80 @@ rend_service_load_keys(rend_service_t *s)
     return -1;
   }
 
-  if (s->directory) {
-    char buf[128];
+  return 0;
+}
 
-    /* Create service file */
-    if (strlcpy(fname,s->directory,sizeof(fname)) >= sizeof(fname) ||
-        strlcat(fname,PATH_SEPARATOR"hostname",sizeof(fname))
-        >= sizeof(fname)) {
-      log_warn(LD_CONFIG, "Directory name too long to store hostname file:"
-               " \"%s\".", s->directory);
-      return -1;
-    }
+/** Load and/or generate private keys for the hidden service <b>s</b>,
+ * possibly including keys for client authorization.  Return 0 on success, -1
+ * on failure. */
+static int
+rend_service_load_keys(rend_service_t *s)
+{
+  char fname[512];
+  char buf[128];
+  cpd_check_t  check_opts = CPD_CREATE;
 
-    tor_snprintf(buf, sizeof(buf),"%s.onion\n", s->service_id);
-    if (write_str_to_file(fname,buf,0)<0) {
-      log_warn(LD_CONFIG, "Could not write onion address to hostname file.");
-      memwipe(buf, 0, sizeof(buf));
-      return -1;
-    }
+  if (s->dir_group_readable) {
+    check_opts |= CPD_GROUP_READ;
+  }
+  /* Check/create directory */
+  if (check_private_dir(s->directory, check_opts, get_options()->User) < 0) {
+    return -1;
+  }
 #ifndef _WIN32
-    if (s->dir_group_readable) {
-      /* Also verify hostname file created with group read. */
-      if (chmod(fname, 0640))
-        log_warn(LD_FS,"Unable to make hidden hostname file %s group-readable.",
-                 fname);
+  if (s->dir_group_readable) {
+    /* Only new dirs created get new opts, also enforce group read. */
+    if (chmod(s->directory, 0750)) {
+      log_warn(LD_FS,"Unable to make %s group-readable.", s->directory);
     }
+  }
 #endif
 
-    memwipe(buf, 0, sizeof(buf));
+  /* Load key */
+  if (strlcpy(fname,s->directory,sizeof(fname)) >= sizeof(fname) ||
+      strlcat(fname,PATH_SEPARATOR"private_key",sizeof(fname))
+         >= sizeof(fname)) {
+    log_warn(LD_CONFIG, "Directory name too long to store key file: \"%s\".",
+             s->directory);
+    return -1;
+  }
+  s->private_key = init_key_from_file(fname, 1, LOG_ERR, 0);
+  if (!s->private_key)
+    return -1;
 
-    /* If client authorization is configured, load or generate keys. */
-    if (s->auth_type != REND_NO_AUTH) {
-      if (rend_service_load_auth_keys(s, fname) < 0)
-        return -1;
-    }
+  if (rend_service_derive_key_digests(s) < 0)
+    return -1;
+
+  /* Create service file */
+  if (strlcpy(fname,s->directory,sizeof(fname)) >= sizeof(fname) ||
+      strlcat(fname,PATH_SEPARATOR"hostname",sizeof(fname))
+      >= sizeof(fname)) {
+    log_warn(LD_CONFIG, "Directory name too long to store hostname file:"
+             " \"%s\".", s->directory);
+    return -1;
+  }
+
+  tor_snprintf(buf, sizeof(buf),"%s.onion\n", s->service_id);
+  if (write_str_to_file(fname,buf,0)<0) {
+    log_warn(LD_CONFIG, "Could not write onion address to hostname file.");
+    memwipe(buf, 0, sizeof(buf));
+    return -1;
+  }
+#ifndef _WIN32
+  if (s->dir_group_readable) {
+    /* Also verify hostname file created with group read. */
+    if (chmod(fname, 0640))
+      log_warn(LD_FS,"Unable to make hidden hostname file %s group-readable.",
+               fname);
+  }
+#endif
+
+  memwipe(buf, 0, sizeof(buf));
+
+  /* If client authorization is configured, load or generate keys. */
+  if (s->auth_type != REND_NO_AUTH) {
+    if (rend_service_load_auth_keys(s, fname) < 0)
+      return -1;
   }
 
   return 0;
