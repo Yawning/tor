@@ -3237,14 +3237,14 @@ handle_control_add_onion(control_connection_t *conn,
    */
   smartlist_t *port_cfg = smartlist_new();
   int discard_pk = 0;
-  for (size_t i = 1; i < arg_len; i++) {
+  if (!strcasecmp(smartlist_get(args, 1), "DiscardPK")) {
+    discard_pk = 1;
+  }
+  for (size_t i = discard_pk + 1; i < arg_len; i++) {
     static const char *port_prefix = "Port=";
 
     const char *arg = smartlist_get(args, i);
-    if (!strcasecmp(arg, "DiscardPK")) {
-      /* "DiscardPK" */
-      discard_pk = 1;
-    } else if (!strcasecmpstart(arg, port_prefix)) {
+    if (!strcasecmpstart(arg, port_prefix)) {
       /* "Port=VIRTPORT[,TARGET]". */
       char *port_str = tor_strdup(arg + strlen(port_prefix));
       char *comma_pos;
