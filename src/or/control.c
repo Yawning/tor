@@ -3237,11 +3237,9 @@ handle_control_add_onion(control_connection_t *conn,
    */
   smartlist_t *port_cfg = smartlist_new();
   int discard_pk = 0;
-  if (!strcasecmp(smartlist_get(args, 1), "DiscardPK")) {
-    discard_pk = 1;
-  }
-  for (size_t i = discard_pk + 1; i < arg_len; i++) {
+  for (size_t i = 1; i < arg_len; i++) {
     static const char *port_prefix = "Port=";
+    static const char *flags_prefix = "Flags=";
 
     const char *arg = smartlist_get(args, i);
     if (!strcasecmpstart(arg, port_prefix)) {
@@ -3267,6 +3265,32 @@ handle_control_add_onion(control_connection_t *conn,
         connection_printf_to_buf(conn, "512 Invalid VIRTPORT/TARGET\r\n");
         goto out;
       }
+    } else if (!strcasecmpstart(arg, flags_prefix)) {
+      /* "Flags=Flag[,Flag]", where Flag can be:
+       *   * 'DiscardPK' - If tor generates the keypair, do not include it in
+       *                   the response.
+       */
+      smartlist_t *flags = smartlist_new();
+      int flags_ok = 1;
+
+      smartlist_split_string(flags, arg + strlen(flags_prefix), ",",
+                             SPLIT_IGNORE_BLANK, 0);
+      SMARTLIST_FOREACH_BEGIN(flags, const char *, flag)
+      {
+        if (!strcasecmp(flag, "DiscardPK")) {
+          discard_pk = 1;
+        } else {
+          connection_printf_to_buf(conn, "512 Invalid 'Flags' argument: %s\r\n",
+                                   escaped(flag));
+          flags_ok = 0;
+          break;
+        }
+      }
+      SMARTLIST_FOREACH_END(flag);
+      SMARTLIST_FOREACH(flags, char *, cp, tor_free(cp));
+      smartlist_free(flags);
+      if (!flags_ok)
+        goto out;
     } else {
       connection_printf_to_buf(conn, "513 Invalid argument\r\n");
       goto out;
