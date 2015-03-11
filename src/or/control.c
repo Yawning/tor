@@ -3231,38 +3231,50 @@ handle_control_add_onion(control_connection_t *conn,
     return 0;
   arg_len = smartlist_len(args);
 
-  /* Parse the "Port=VIRTPORT[,TARGET]" args. */
+  /* Parse all of the arguments that do not involve handling cryptographic
+   * material first, since there's no reason to touch that at all if any of
+   * the other arguments are malformed.
+   */
   smartlist_t *port_cfg = smartlist_new();
+  int discard_pk = 0;
   for (size_t i = 1; i < arg_len; i++) {
-    /* Expecting "Port=VIRTPORT[,TARGET]". */
-    static const char *prefix = "Port=";
-    const char *port_arg = smartlist_get(args, i);
-    if (strcasecmpstart(port_arg, prefix)) {
-      connection_printf_to_buf(conn, "512 Invalid 'Port' argument\r\n");
+    static const char *port_prefix = "Port=";
+
+    const char *arg = smartlist_get(args, i);
+    if (!strcasecmp(arg, "DiscardPK")) {
+      /* "DiscardPK" */
+      discard_pk = 1;
+    } else if (!strcasecmpstart(arg, port_prefix)) {
+      /* "Port=VIRTPORT[,TARGET]". */
+      char *port_str = tor_strdup(arg + strlen(port_prefix));
+      char *comma_pos;
+
+      /* Convert the Port argument value into a form capable of being parsed
+       * by rendservice.c:parse_port_config(), and do some minor sanity
+       * checking.
+       */
+      smartlist_add(port_cfg, port_str); /* Always add, easy cleanup. */
+      int virtport = (int)tor_parse_long(port_str, 10, 1, 65536, NULL,
+                                         &comma_pos);
+      if (!virtport) {
+        /* That's odd, the argument body doesn't begin with a port. */
+        connection_printf_to_buf(conn, "512 Invalid VIRTPORT\r\n");
+        goto out;
+      } else if (*comma_pos == ',') {
+        /* The first comma if any is separating the VIRTPORT and TARGET. */
+        *comma_pos = ' ';
+      } else if (*comma_pos != '\0') { /* Missing ",TARGET" is ok. */
+        connection_printf_to_buf(conn, "512 Invalid VIRTPORT/TARGET\r\n");
+        goto out;
+      }
+    } else {
+      connection_printf_to_buf(conn, "513 Invalid argument\r\n");
       goto out;
     }
-    port_arg += strlen(prefix); /* Skip the prefix. */
-
-    /* Convert the Port argument value into a form capable of being parsed by
-     * rendservice.c:parse_port_config(), and do some minor sanity checking.
-     */
-    char *port_str = tor_strdup(port_arg);
-    char *comma_pos;
-
-    smartlist_add(port_cfg, port_str); /* Always add, so cleanup is unified. */
-    int virtport = (int)tor_parse_long(port_str, 10, 1, 65536, NULL,
-                                       &comma_pos);
-    if (!virtport) {
-      /* That's odd, the argument body doesn't begin with a port. */
-      connection_printf_to_buf(conn, "512 Invalid VIRTPORT\r\n");
-      goto out;
-    } else if (*comma_pos == ',') {
-      /* The first comma if any is separating the VIRTPORT and TARGET. */
-      *comma_pos = ' ';
-    } else if (*comma_pos != '\0') { /* Missing ",TARGET" is ok. */
-      connection_printf_to_buf(conn, "512 Invalid VIRTPORT/TARGET\r\n");
-      goto out;
-    }
+  }
+  if (smartlist_len(port_cfg) == 0) {
+    connection_printf_to_buf(conn, "512 Missing 'Port' argument\r\n");
+    goto out;
   }
 
   /* Parse the "keytype:keyblob" argument. */
@@ -3301,11 +3313,13 @@ handle_control_add_onion(control_connection_t *conn,
           connection_printf_to_buf(conn, "551 Failed to generate RSA key\r\n");
           break;
         }
-        if (crypto_pk_base64_encode(pk, &key_new_blob)) {
-          connection_printf_to_buf(conn, "551 Failed to encode RSA key\r\n");
-          break;
+        if (!discard_pk) {
+          if (crypto_pk_base64_encode(pk, &key_new_blob)) {
+            connection_printf_to_buf(conn, "551 Failed to encode RSA key\r\n");
+            break;
+          }
+          key_new_alg = "RSA1024";
         }
-        key_new_alg = "RSA1024";
       } else {
         connection_printf_to_buf(conn, "513 Invalid key type\r\n");
         break;
