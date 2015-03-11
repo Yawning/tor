@@ -3413,29 +3413,29 @@ handle_control_del_onion(control_connection_t *conn,
   const char *service_id = smartlist_get(args, 0);
   int idx = smartlist_string_pos(conn->ephemeral_onion_services, service_id);
   if (idx == -1) {
-    /* Ephemeral hidden services are bound to the originating control
-     * connection, disavow knowledge of the HS if it does not belong to the
-     * connection that the `DEL_ONION` command was issued on.
+    /* Ephemeral Onion Services are bound to the originating control
+     * connection, disavow knowledge of the service if it does not belong
+     * to the connection that the `DEL_ONION` command was issued on.
      */
     connection_printf_to_buf(conn, "552 Unknown Onion Service id\r\n");
   } else {
-    if (!rend_service_del_ephemeral(service_id)) {
-      /* Remove/scrub the service_id from the ephemeral_onion_service list. */
-      char *cp = smartlist_get(conn->ephemeral_onion_services, idx);
-      smartlist_del(conn->ephemeral_onion_services, idx);
-      memwipe(cp, 0, strlen(cp));
-      tor_free(cp);
-
-      send_control_done(conn);
-    } else {
-      /* This should *NEVER* fail, since the service is on the list of eph. HSes
-       * belonging to this control connection.
-       *
-       * XXX: Should this remove it from the list on failure?
+    int ret = rend_service_del_ephemeral(service_id);
+    if (ret) {
+      /* This should *NEVER* fail, since the service is on the list of Onion
+       * Services bound to this control connection.
        */
+      log_warn(LD_BUG, "Failed to remove Onion Service %s.",
+               escaped(service_id));
       tor_fragile_assert();
-      connection_printf_to_buf(conn, "552 Unknown Onion Service id\r\n");
     }
+
+    /* Remove/scrub the service_id from the ephemeral_onion_service list. */
+    char *cp = smartlist_get(conn->ephemeral_onion_services, idx);
+    smartlist_del(conn->ephemeral_onion_services, idx);
+    memwipe(cp, 0, strlen(cp));
+    tor_free(cp);
+
+    send_control_done(conn);
   }
 
   SMARTLIST_FOREACH(args, char *, cp, {
