@@ -743,14 +743,13 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
    * it's not, see #14828.
    */
   if (rend_service_get_by_pk_digest(s->pk_digest)) {
-    log_warn(LD_CONFIG, "Ephemeral Hidden Service private key collides with "
-            "an existing service.");
+    log_warn(LD_CONFIG, "Onion Service private key collides with an "
+             "existing service.");
     rend_service_free(s);
     return -2;
   }
   if (rend_service_get_by_service_id(s->service_id)) {
-    log_warn(LD_CONFIG, "Ephemeral Hidden Service id collides with an "
-             "existing service.");
+    log_warn(LD_CONFIG, "Onion Service id collides with an existing service.");
     rend_service_free(s);
     return -2;
   }
@@ -774,7 +773,7 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
   }
   *service_id_out = tor_strdup(s->service_id);
 
-  log_debug(LD_CONFIG, "Added ephemeral hidden service: %s", s->service_id);
+  log_debug(LD_CONFIG, "Added ephemeral Onion Service: %s", s->service_id);
   return 0;
 }
 
@@ -785,21 +784,20 @@ rend_service_del_ephemeral(const char *service_id)
 {
   rend_service_t *s;
   if (strlen(service_id) != REND_SERVICE_ID_LEN_BASE32) {
-    log_warn(LD_CONFIG, "Requested malformed Ephemeral Hidden Service id "
-             "for removal.");
+    log_warn(LD_CONFIG, "Requested malformed Onion Service id for removal.");
     return -1;
   }
   if ((s = rend_service_get_by_service_id(service_id)) == NULL) {
-    log_warn(LD_CONFIG, "Requested non-existent Ephemeral Hidden Service id "
-             "for removal.");
+    log_warn(LD_CONFIG, "Requested non-existent Onion Service id for "
+             "removal.");
     return -1;
   }
   if (s->directory) {
-    log_warn(LD_CONFIG, "Requested non-Ephemeral Hidden Service for removal.");
+    log_warn(LD_CONFIG, "Requested non-ephemeral Onion Service for removal.");
     return -1;
   }
 
-  /* Kill the intro point circuit for the hidden service, and remove it from
+  /* Kill the intro point circuit for the Onion Service, and remove it from
    * the list.  Closing existing connections is the application's problem.
    *
    * XXX: As with the comment in rend_config_services(), a nice abstraction
@@ -825,7 +823,7 @@ rend_service_del_ephemeral(const char *service_id)
   smartlist_remove(rend_service_list, s);
   rend_service_free(s);
 
-  log_debug(LD_CONFIG, "Removed ephemeral hidden service: %s", service_id);
+  log_debug(LD_CONFIG, "Removed ephemeral Onion Service: %s", service_id);
 
   return 0;
 }

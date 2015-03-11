@@ -586,12 +586,12 @@ connection_free_(connection_t *conn)
     control_connection_t *control_conn = TO_CONTROL_CONN(conn);
     tor_free(control_conn->safecookie_client_hash);
     tor_free(control_conn->incoming_cmd);
-    if (control_conn->ephemeral_hidden_services) {
-      SMARTLIST_FOREACH(control_conn->ephemeral_hidden_services, char *, cp, {
+    if (control_conn->ephemeral_onion_services) {
+      SMARTLIST_FOREACH(control_conn->ephemeral_onion_services, char *, cp, {
         memwipe(cp, 0, strlen(cp));
         tor_free(cp);
       });
-      smartlist_free(control_conn->ephemeral_hidden_services);
+      smartlist_free(control_conn->ephemeral_onion_services);
     }
   }
 

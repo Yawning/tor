@@ -1,4 +1,4 @@
   o Minor features (controller):
-    - Add the ADD_EPH_HS and DEL_EPH_HS commands that allows the creation
+    - Add the ADD_ONION and DEL_ONION commands that allows the creation
       and destruction of hidden services via the controller. Closes ticket
       6411.

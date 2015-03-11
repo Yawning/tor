@@ -1731,8 +1731,8 @@ typedef struct control_connection_t {
    * connection. */
   unsigned int is_owning_control_connection:1;
 
-  /** List of ephemeral hidden services belonging to this connection. */
-  smartlist_t *ephemeral_hidden_services;
+  /** List of ephemeral onion services belonging to this connection. */
+  smartlist_t *ephemeral_onion_services;
 
   /** If we have sent an AUTHCHALLENGE reply on this connection and
    * have not received a successful AUTHENTICATE command, points to

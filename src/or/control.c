@@ -158,10 +158,10 @@ static int handle_control_resolve(control_connection_t *conn, uint32_t len,
 static int handle_control_usefeature(control_connection_t *conn,
                                      uint32_t len,
                                      const char *body);
-static int handle_control_add_eph_hs(control_connection_t *conn, uint32_t len,
-                                     const char *body);
-static int handle_control_del_eph_hs(control_connection_t *conn, uint32_t len,
-                                     const char *body);
+static int handle_control_add_onion(control_connection_t *conn, uint32_t len,
+                                    const char *body);
+static int handle_control_del_onion(control_connection_t *conn, uint32_t len,
+                                    const char *body);
 static int write_stream_target_to_buf(entry_connection_t *conn, char *buf,
                                       size_t len);
 static void orconn_target_get_name(char *buf, size_t len,
@@ -3216,17 +3216,17 @@ handle_control_dropguards(control_connection_t *conn,
   return 0;
 }
 
-/** Called when we get a ADD_EPH_HS command; parse the body, and set up
- * the new ephemeral Hidden Service. */
+/** Called when we get a ADD_ONION command; parse the body, and set up
+ * the new ephemeral Onion Service. */
 static int
-handle_control_add_eph_hs(control_connection_t *conn,
-                          uint32_t len,
-                          const char *body)
+handle_control_add_onion(control_connection_t *conn,
+                         uint32_t len,
+                         const char *body)
 {
   smartlist_t *args;
   size_t arg_len;
   (void) len; /* body is nul-terminated; it's safe to ignore the length */
-  args = getargs_helper("ADD_EPH_HS", conn, body, 2, -1);
+  args = getargs_helper("ADD_ONION", conn, body, 2, -1);
   if (!args)
     return 0;
   arg_len = smartlist_len(args);
@@ -3357,10 +3357,10 @@ handle_control_add_eph_hs(control_connection_t *conn,
                    "250 OK\r\n",
                    service_id);
     }
-    if (!conn->ephemeral_hidden_services) {
-      conn->ephemeral_hidden_services = smartlist_new();
+    if (!conn->ephemeral_onion_services) {
+      conn->ephemeral_onion_services = smartlist_new();
     }
-    smartlist_add(conn->ephemeral_hidden_services, service_id);
+    smartlist_add(conn->ephemeral_onion_services, service_id);
 
     connection_write_str_to_buf(buf, conn);
     memwipe(buf, 0, strlen(buf));
@@ -3378,7 +3378,7 @@ handle_control_add_eph_hs(control_connection_t *conn,
     break;
   case -4: /* FALLSTHROUGH */
   default:
-    connection_printf_to_buf(conn, "551 Failed to add hidden service\r\n");
+    connection_printf_to_buf(conn, "551 Failed to add Onion Service\r\n");
   }
   if (key_new_blob) {
     memwipe(key_new_blob, 0, strlen(key_new_blob));
@@ -3397,43 +3397,44 @@ out:
   return 0;
 }
 
-/** Called when we get a DEL_EPH_HS command; parse the body, and remove
- * the existing ephemeral Hidden Service. */
+/** Called when we get a DEL_ONION command; parse the body, and remove
+ * the existing ephemeral Onion Service. */
 static int
-handle_control_del_eph_hs(control_connection_t *conn,
+handle_control_del_onion(control_connection_t *conn,
                           uint32_t len,
                           const char *body)
 {
   smartlist_t *args;
   (void) len; /* body is nul-terminated; it's safe to ignore the length */
-  args = getargs_helper("DEL_EPH_HS", conn, body, 1, 1);
+  args = getargs_helper("DEL_ONION", conn, body, 1, 1);
   if (!args)
     return 0;
 
   const char *service_id = smartlist_get(args, 0);
-  int idx = smartlist_string_pos(conn->ephemeral_hidden_services, service_id);
+  int idx = smartlist_string_pos(conn->ephemeral_onion_services, service_id);
   if (idx == -1) {
     /* Ephemeral hidden services are bound to the originating control
      * connection, disavow knowledge of the HS if it does not belong to the
-     * connection that the `DEL_EPH_HS` command was issued on.
+     * connection that the `DEL_ONION` command was issued on.
      */
-    connection_printf_to_buf(conn, "552 Unknown hidden service id\r\n");
+    connection_printf_to_buf(conn, "552 Unknown Onion Service id\r\n");
   } else {
     if (!rend_service_del_ephemeral(service_id)) {
-      /* Remove/scrub the service_id from the ephemeral_hidden_service list. */
-      char *cp = smartlist_get(conn->ephemeral_hidden_services, idx);
-      smartlist_del(conn->ephemeral_hidden_services, idx);
+      /* Remove/scrub the service_id from the ephemeral_onion_service list. */
+      char *cp = smartlist_get(conn->ephemeral_onion_services, idx);
+      smartlist_del(conn->ephemeral_onion_services, idx);
       memwipe(cp, 0, strlen(cp));
       tor_free(cp);
 
       send_control_done(conn);
     } else {
       /* This should *NEVER* fail, since the service is on the list of eph. HSes
-       * belonging to this control connection.  XXX: Should this remove it from
-       * the list on failure?
+       * belonging to this control connection.
+       *
+       * XXX: Should this remove it from the list on failure?
        */
       tor_fragile_assert();
-      connection_printf_to_buf(conn, "552 Unknown hidden service id\r\n");
+      connection_printf_to_buf(conn, "552 Unknown Onion Service id\r\n");
     }
   }
 
@@ -3491,11 +3492,11 @@ connection_control_closed(control_connection_t *conn)
   conn->event_mask = 0;
   control_update_global_event_mask();
 
-  /* Close all ephemeral hidden services if any.
+  /* Close all ephemeral Onion Services if any.
    * The list and it's contents are scrubbed/freed in connection_free_.
    */
-  if (conn->ephemeral_hidden_services) {
-    SMARTLIST_FOREACH(conn->ephemeral_hidden_services, char *, cp, {
+  if (conn->ephemeral_onion_services) {
+    SMARTLIST_FOREACH(conn->ephemeral_onion_services, char *, cp, {
       rend_service_del_ephemeral(cp);
     });
   }
@@ -3751,14 +3752,14 @@ connection_control_process_inbuf(control_connection_t *conn)
   } else if (!strcasecmp(conn->incoming_cmd, "DROPGUARDS")) {
     if (handle_control_dropguards(conn, cmd_data_len, args))
       return -1;
-  } else if (!strcasecmp(conn->incoming_cmd, "ADD_EPH_HS")) {
-    int ret = handle_control_add_eph_hs(conn, cmd_data_len, args);
+  } else if (!strcasecmp(conn->incoming_cmd, "ADD_ONION")) {
+    int ret = handle_control_add_onion(conn, cmd_data_len, args);
     memwipe(args, 0, cmd_data_len); /* Scrub the private key. */
     if (ret)
       return -1;
-  } else if (!strcasecmp(conn->incoming_cmd, "DEL_EPH_HS")) {
-    int ret = handle_control_del_eph_hs(conn, cmd_data_len, args);
-    memwipe(args, 0, cmd_data_len); /* Scrub the service id. */
+  } else if (!strcasecmp(conn->incoming_cmd, "DEL_ONION")) {
+    int ret = handle_control_del_onion(conn, cmd_data_len, args);
+    memwipe(args, 0, cmd_data_len); /* Scrub the service id/pk. */
     if (ret)
       return -1;
   } else {
