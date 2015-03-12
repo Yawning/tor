@@ -167,6 +167,8 @@ static int handle_control_add_onion(control_connection_t *conn, uint32_t len,
                                     const char *body);
 static int handle_control_del_onion(control_connection_t *conn, uint32_t len,
                                     const char *body);
+static int handle_control_get_onions(control_connection_t *conn, uint32_t len,
+                                     const char *body);
 static int write_stream_target_to_buf(entry_connection_t *conn, char *buf,
                                       size_t len);
 static void orconn_target_get_name(char *buf, size_t len,
@@ -3517,6 +3519,41 @@ handle_control_del_onion(control_connection_t *conn,
   return 0;
 }
 
+/** Implementation for the GET_ONIONS command. */
+static int
+handle_control_get_onions(control_connection_t *conn,
+                          uint32_t len,
+                          const char *body)
+{
+  smartlist_t *args;
+  (void) len; /* body is nul-terminated; it's safe to ignore the length */
+  args = smartlist_new();
+  smartlist_split_string(args, body, " ",
+                         SPLIT_SKIP_SPACE|SPLIT_IGNORE_BLANK, 0);
+
+  if (smartlist_len(args)) {
+    connection_printf_to_buf(conn, "512 Too many arguments to GET_ONIONS\r\n");
+  } else {
+    const smartlist_t *l[2] = {
+      conn->ephemeral_onion_services,
+      detached_onion_services
+    };
+    for (int i = 0; i < ARRAY_LENGTH(l); i++) {
+      if (l[i] == NULL)
+        continue;
+      SMARTLIST_FOREACH(l[i], const char *, service_id, {
+        connection_printf_to_buf(conn, "250-ServiceID=%s%s\r\n",
+                                 service_id, i ? " Flags=Detach" : "");
+      });
+    }
+    send_control_done(conn);
+  }
+
+  SMARTLIST_FOREACH(args, char *, cp, tor_free(cp));
+  smartlist_free(args);
+  return 0;
+}
+
 /** Called when <b>conn</b> has no more bytes left on its outbuf. */
 int
 connection_control_finished_flushing(control_connection_t *conn)
@@ -3832,6 +3869,9 @@ connection_control_process_inbuf(control_connection_t *conn)
     int ret = handle_control_del_onion(conn, cmd_data_len, args);
     memwipe(args, 0, cmd_data_len); /* Scrub the service id/pk. */
     if (ret)
+      return -1;
+  } else if (!strcasecmp(conn->incoming_cmd, "GET_ONIONS")) {
+    if (handle_control_get_onions(conn, cmd_data_len, args))
       return -1;
   } else {
     connection_printf_to_buf(conn, "510 Unrecognized command \"%s\"\r\n",
