@@ -3225,6 +3225,7 @@ handle_control_add_onion(control_connection_t *conn,
 {
   smartlist_t *args;
   size_t arg_len;
+  int bad = 0;
   (void) len; /* body is nul-terminated; it's safe to ignore the length */
   args = getargs_helper("ADD_ONION", conn, body, 2, -1);
   if (!args)
@@ -3271,10 +3272,13 @@ handle_control_add_onion(control_connection_t *conn,
        *                   the response.
        */
       smartlist_t *flags = smartlist_new();
-      int flags_ok = 1;
 
       smartlist_split_string(flags, arg + strlen(flags_prefix), ",",
                              SPLIT_IGNORE_BLANK, 0);
+      if (smartlist_len(flags) < 1) {
+        connection_printf_to_buf(conn, "512 Invalid 'Flags' argument\r\n");
+        bad = 1;
+      }
       SMARTLIST_FOREACH_BEGIN(flags, const char *, flag)
       {
         if (!strcasecmp(flag, "DiscardPK")) {
@@ -3282,14 +3286,14 @@ handle_control_add_onion(control_connection_t *conn,
         } else {
           connection_printf_to_buf(conn, "512 Invalid 'Flags' argument: %s\r\n",
                                    escaped(flag));
-          flags_ok = 0;
+          bad = 1;
           break;
         }
       }
       SMARTLIST_FOREACH_END(flag);
       SMARTLIST_FOREACH(flags, char *, cp, tor_free(cp));
       smartlist_free(flags);
-      if (!flags_ok)
+      if (bad)
         goto out;
     } else {
       connection_printf_to_buf(conn, "513 Invalid argument\r\n");
@@ -3301,20 +3305,21 @@ handle_control_add_onion(control_connection_t *conn,
     goto out;
   }
 
-  /* Parse the "keytype:keyblob" argument. */
+  /* Parse the "keytype:keyblob" argument.
+   * Note: Errors are intentionally vague to prevent from echoing potentially
+   * sensitive key material on the event of user error.
+   */
   smartlist_t *key_args = smartlist_new();
   crypto_pk_t *pk = NULL;
   const char *key_new_alg = NULL;
   char *key_new_blob = NULL;
-  int pk_ok = 0;
-  do {
-    smartlist_split_string(key_args, smartlist_get(args, 0), ":",
-                           SPLIT_IGNORE_BLANK, 0);
-    if (smartlist_len(key_args) != 2) {
-      connection_printf_to_buf(conn, "512 Invalid key type/blob\r\n");
-      break;
-    }
 
+  bad = 1; /* Assume failure, cleared on success. */
+  smartlist_split_string(key_args, smartlist_get(args, 0), ":",
+                         SPLIT_IGNORE_BLANK, 0);
+  if (smartlist_len(key_args) != 2) {
+    connection_printf_to_buf(conn, "512 Invalid key type/blob\r\n");
+  } else {
     const char *key_type = smartlist_get(key_args, 0);
     const char *key_blob = smartlist_get(key_args, 1);
     if (!strcasecmp("RSA1024", key_type)) {
@@ -3322,11 +3327,11 @@ handle_control_add_onion(control_connection_t *conn,
       pk = crypto_pk_base64_decode(key_blob, strlen(key_blob));
       if (!pk) {
         connection_printf_to_buf(conn, "512 Failed to decode RSA key\r\n");
-        break;
+        goto done_keyargs;
       }
       if (crypto_pk_num_bits(pk) != PK_BYTES*8) {
         connection_printf_to_buf(conn, "512 Invalid RSA key size\r\n");
-        break;
+        goto done_keyargs;
       }
     } else if (!strcasecmp("NEW", key_type)) {
       /* Generating a new key, algorithm specified in the keyBlob. */
@@ -3335,38 +3340,36 @@ handle_control_add_onion(control_connection_t *conn,
         pk = crypto_pk_new();
         if (crypto_pk_generate_key(pk)) {
           connection_printf_to_buf(conn, "551 Failed to generate RSA key\r\n");
-          break;
+          goto done_keyargs;
         }
         if (!discard_pk) {
           if (crypto_pk_base64_encode(pk, &key_new_blob)) {
             connection_printf_to_buf(conn, "551 Failed to encode RSA key\r\n");
-            break;
+            goto done_keyargs;
           }
           key_new_alg = "RSA1024";
         }
       } else {
         connection_printf_to_buf(conn, "513 Invalid key type\r\n");
-        break;
+        goto done_keyargs;
       }
     } else {
-      /* This is deliberately vague to avoid potentially echoing keys. */
       connection_printf_to_buf(conn, "513 Invalid key type\r\n");
-      break;
+      goto done_keyargs;
     }
-
     /* Succeded in either loading or generating a new key. */
     tor_assert(pk);
-    pk_ok = 1;
-  } while(0);
+    bad = 0;
+  }
+done_keyargs:
   SMARTLIST_FOREACH(key_args, char *, cp, {
     memwipe(cp, 0, strlen(cp));
     tor_free(cp);
   });
   smartlist_free(key_args);
-  if (!pk_ok) {
-    if (pk) {
+  if (bad) {
+    if (pk)
       crypto_pk_free(pk);
-    }
     goto out;
   }
 
