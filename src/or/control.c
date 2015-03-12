@@ -93,6 +93,11 @@ static uint8_t *authentication_cookie = NULL;
   "Tor safe cookie authentication controller-to-server hash"
 #define SAFECOOKIE_SERVER_NONCE_LEN DIGEST256_LEN
 
+/** The list of onion services that have been added via ADD_ONION that do not
+ * belong to any particular control connection.
+ */
+static smartlist_t *detached_onion_services = NULL;
+
 /** A sufficiently large size to record the last bootstrap phase string. */
 #define BOOTSTRAP_MSG_LEN 1024
 
@@ -3238,6 +3243,7 @@ handle_control_add_onion(control_connection_t *conn,
    */
   smartlist_t *port_cfg = smartlist_new();
   int discard_pk = 0;
+  int detach = 0;
   for (size_t i = 1; i < arg_len; i++) {
     static const char *port_prefix = "Port=";
     static const char *flags_prefix = "Flags=";
@@ -3270,6 +3276,8 @@ handle_control_add_onion(control_connection_t *conn,
       /* "Flags=Flag[,Flag]", where Flag can be:
        *   * 'DiscardPK' - If tor generates the keypair, do not include it in
        *                   the response.
+       *   * 'Detach' - Do not tie this onion service to any particular control
+       *                connection.
        */
       smartlist_t *flags = smartlist_new();
 
@@ -3283,6 +3291,8 @@ handle_control_add_onion(control_connection_t *conn,
       {
         if (!strcasecmp(flag, "DiscardPK")) {
           discard_pk = 1;
+        } else if (!strcasecmp(flag, "Detach")) {
+          detach = 1;
         } else {
           connection_printf_to_buf(conn, "512 Invalid 'Flags' argument: %s\r\n",
                                    escaped(flag));
@@ -3398,10 +3408,15 @@ done_keyargs:
                    "250 OK\r\n",
                    service_id);
     }
-    if (!conn->ephemeral_onion_services) {
-      conn->ephemeral_onion_services = smartlist_new();
+    if (detach) {
+      if (!detached_onion_services)
+        detached_onion_services = smartlist_new();
+      smartlist_add(detached_onion_services, service_id);
+    } else {
+      if (!conn->ephemeral_onion_services)
+        conn->ephemeral_onion_services = smartlist_new();
+      smartlist_add(conn->ephemeral_onion_services, service_id);
     }
-    smartlist_add(conn->ephemeral_onion_services, service_id);
 
     connection_write_str_to_buf(buf, conn);
     memwipe(buf, 0, strlen(buf));
@@ -3452,27 +3467,42 @@ handle_control_del_onion(control_connection_t *conn,
     return 0;
 
   const char *service_id = smartlist_get(args, 0);
-  int idx = smartlist_string_pos(conn->ephemeral_onion_services, service_id);
-  if (idx == -1) {
-    /* Ephemeral Onion Services are bound to the originating control
-     * connection, disavow knowledge of the service if it does not belong
-     * to the connection that the `DEL_ONION` command was issued on.
-     */
+
+  /* Determine if the onion service belongs to this particular control
+   * connection, or if it is in the global list of detached services.  If it
+   * is in neither, either the service ID is invalid in some way, or it
+   * explicitly belongs to a different control connection, and an error
+   * should be returned.
+   */
+  smartlist_t *l[2] = {
+    conn->ephemeral_onion_services,
+    detached_onion_services
+  };
+  smartlist_t *onion_services = NULL;
+  int idx = -1;
+  for (int i = 0; i < ARRAY_LENGTH(l); i++) {
+    idx = smartlist_string_pos(l[i], service_id);
+    if (idx != -1) {
+      onion_services = l[i];
+      break;
+    }
+  }
+  if (onion_services == NULL || idx == -1) {
     connection_printf_to_buf(conn, "552 Unknown Onion Service id\r\n");
   } else {
     int ret = rend_service_del_ephemeral(service_id);
     if (ret) {
-      /* This should *NEVER* fail, since the service is on the list of Onion
-       * Services bound to this control connection.
+      /* This should *NEVER* fail, since the service is on either the
+       * per-control connection list, or the global one.
        */
       log_warn(LD_BUG, "Failed to remove Onion Service %s.",
                escaped(service_id));
       tor_fragile_assert();
     }
 
-    /* Remove/scrub the service_id from the ephemeral_onion_service list. */
-    char *cp = smartlist_get(conn->ephemeral_onion_services, idx);
-    smartlist_del(conn->ephemeral_onion_services, idx);
+    /* Remove/scrub the service_id from the appropriate list. */
+    char *cp = smartlist_get(onion_services, idx);
+    smartlist_del(onion_services, idx);
     memwipe(cp, 0, strlen(cp));
     tor_free(cp);
 
@@ -5563,6 +5593,10 @@ control_free_all(void)
 {
   if (authentication_cookie) /* Free the auth cookie */
     tor_free(authentication_cookie);
+  if (detached_onion_services) { /* Free the detached onion services */
+    SMARTLIST_FOREACH(detached_onion_services, char *, cp, tor_free(cp));
+    smartlist_free(detached_onion_services);
+  }
 }
 
 #ifdef TOR_UNIT_TESTS
