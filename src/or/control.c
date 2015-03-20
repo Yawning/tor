@@ -3262,7 +3262,7 @@ handle_control_add_onion(control_connection_t *conn,
        * checking.
        */
       smartlist_add(port_cfg, port_str); /* Always add, easy cleanup. */
-      int virtport = (int)tor_parse_long(port_str, 10, 1, 65536, NULL,
+      int virtport = (int)tor_parse_long(port_str, 10, 1, 65535, NULL,
                                          &comma_pos);
       if (!virtport) {
         /* That's odd, the argument body doesn't begin with a port. */
