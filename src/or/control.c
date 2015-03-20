@@ -3431,16 +3431,16 @@ done_keyargs:
     tor_free(buf);
     break;
   }
-  case -1:
+  case -2:
     connection_printf_to_buf(conn, "551 Failed to generate onion address\r\n");
     break;
-  case -2:
+  case -3:
     connection_printf_to_buf(conn, "550 Onion address collision\r\n");
     break;
-  case -3:
+  case -4:
     connection_printf_to_buf(conn, "512 Invalid VIRTPORT/TARGET\r\n");
     break;
-  case -4: /* FALLSTHROUGH */
+  case -1: /* FALLSTHROUGH */
   default:
     connection_printf_to_buf(conn, "551 Failed to add Onion Service\r\n");
   }

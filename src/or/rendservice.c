@@ -108,7 +108,8 @@ typedef struct rend_service_port_config_t {
 /** Represents a single hidden service running at this OP. */
 typedef struct rend_service_t {
   /* Fields specified in config file */
-  char *directory; /**< where in the filesystem it stores it */
+  char *directory; /**< where in the filesystem it stores it. Will be NULL if
+                    * this service is ephemeral. */
   int dir_group_readable; /**< if 1, allow group read
                              permissions on directory */
   smartlist_t *ports; /**< List of rend_service_port_config_t */
@@ -728,6 +729,9 @@ rend_config_services(const or_options_t *options, int validate_only)
 }
 
 /** Add the ephemeral service <b>pk</b>/<b>port_cfg_strs</b> if possible.
+ * Returns 0 on success, and < 0 on failure, with -1 indicating an internal
+ * error, -2 indicating address generation failure, -3 indicating a collision
+ * with an existing address, and -4 indicating an invalid virtport/target.
  */
 int
 rend_service_add_ephemeral(crypto_pk_t *pk,
@@ -735,7 +739,6 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
                            char **service_id_out)
 {
   *service_id_out = NULL;
-
   /* Allocate the service structure, and initialize the key, and key derived
    * parameters.
    */
@@ -746,7 +749,7 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
   s->ports = smartlist_new();
   if (rend_service_derive_key_digests(s)<0) {
     rend_service_free(s);
-    return -1;
+    return -2;
   }
 
   /* Enforcing pk/id uniqueness should be done by rend_service_load_keys(), but
@@ -756,12 +759,12 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
     log_warn(LD_CONFIG, "Onion Service private key collides with an "
              "existing service.");
     rend_service_free(s);
-    return -2;
+    return -3;
   }
   if (rend_service_get_by_service_id(s->service_id)) {
     log_warn(LD_CONFIG, "Onion Service id collides with an existing service.");
     rend_service_free(s);
-    return -2;
+    return -3;
   }
 
   /* Do the rest of the initialization, now that the key has been validated. */
@@ -769,17 +772,23 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
   s->n_intro_points_wanted = NUM_INTRO_POINTS_DEFAULT;
   SMARTLIST_FOREACH(port_cfg_strs, const char*, cp, {
     rend_service_port_config_t *p = parse_port_config(cp);
-    if (!cp) {
+    if (!p) {
       rend_service_free(s);
-      return -3;
+      return -4;
     }
     smartlist_add(s->ports, p);
   });
-
-  /* Initialize the service. */
-  if (rend_add_service(s)) {
+  if (smartlist_len(s->ports) == 0) {
+    log_warn(LD_CONFIG, "At least one VIRTPORT/TARGET must be specified.");
     rend_service_free(s);
     return -4;
+  }
+
+  /* Initialize the service. */
+  tor_assert(smartlist_len(s->ports) > 0);
+  if (rend_add_service(s)) {
+    rend_service_free(s);
+    return -1;
   }
   *service_id_out = tor_strdup(s->service_id);
 
@@ -787,7 +796,8 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
   return 0;
 }
 
-/** Remove the ephemeral service <b>service_id</b> if possible.
+/** Remove the ephemeral service <b>service_id</b> if possible.  Returns 0 on
+ * success, and -1 on failure.
  */
 int
 rend_service_del_ephemeral(const char *service_id)
