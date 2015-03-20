@@ -36,6 +36,7 @@
 #include "networkstatus.h"
 #include "nodelist.h"
 #include "policies.h"
+#include "rendcommon.h"
 #include "rendservice.h"
 #include "reasons.h"
 #include "rephist.h"
@@ -3474,6 +3475,10 @@ handle_control_del_onion(control_connection_t *conn,
     return 0;
 
   const char *service_id = smartlist_get(args, 0);
+  if (!rend_valid_service_id(service_id)) {
+    connection_printf_to_buf(conn, "512 Malformed Onion Service id\r\n");
+    goto out;
+  }
 
   /* Determine if the onion service belongs to this particular control
    * connection, or if it is in the global list of detached services.  If it
@@ -3516,6 +3521,7 @@ handle_control_del_onion(control_connection_t *conn,
     send_control_done(conn);
   }
 
+out:
   SMARTLIST_FOREACH(args, char *, cp, {
     memwipe(cp, 0, strlen(cp));
     tor_free(cp);
