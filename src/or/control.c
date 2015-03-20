@@ -3332,9 +3332,13 @@ handle_control_add_onion(control_connection_t *conn,
   if (smartlist_len(key_args) != 2) {
     connection_printf_to_buf(conn, "512 Invalid key type/blob\r\n");
   } else {
+    static const char *key_type_new = "NEW";
+    static const char *key_type_best = "BEST";
+    static const char *key_type_rsa1024 = "RSA1024";
+
     const char *key_type = smartlist_get(key_args, 0);
     const char *key_blob = smartlist_get(key_args, 1);
-    if (!strcasecmp("RSA1024", key_type)) {
+    if (!strcasecmp(key_type_rsa1024, key_type)) {
       /* Loading a pre-existing RSA1024 key. */
       pk = crypto_pk_base64_decode(key_blob, strlen(key_blob));
       if (!pk) {
@@ -3345,9 +3349,10 @@ handle_control_add_onion(control_connection_t *conn,
         connection_printf_to_buf(conn, "512 Invalid RSA key size\r\n");
         goto done_keyargs;
       }
-    } else if (!strcasecmp("NEW", key_type)) {
+    } else if (!strcasecmp(key_type_new, key_type)) {
       /* Generating a new key, algorithm specified in the keyBlob. */
-      if (!strcasecmp("RSA1024", key_blob) || !strcasecmp("BEST", key_blob)) {
+      if (!strcasecmp(key_type_rsa1024, key_blob) ||
+          !strcasecmp(key_type_best, key_blob)) {
         /* "RSA1024", RSA 1024 bit, also currently "BEST" by default. */
         pk = crypto_pk_new();
         if (crypto_pk_generate_key(pk)) {
@@ -3359,7 +3364,7 @@ handle_control_add_onion(control_connection_t *conn,
             connection_printf_to_buf(conn, "551 Failed to encode RSA key\r\n");
             goto done_keyargs;
           }
-          key_new_alg = "RSA1024";
+          key_new_alg = key_type_rsa1024;
         }
       } else {
         connection_printf_to_buf(conn, "513 Invalid key type\r\n");
