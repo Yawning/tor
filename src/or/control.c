@@ -3494,7 +3494,7 @@ handle_control_del_onion(control_connection_t *conn,
       break;
     }
   }
-  if (onion_services == NULL || idx == -1) {
+  if (onion_services == NULL) {
     connection_printf_to_buf(conn, "552 Unknown Onion Service id\r\n");
   } else {
     int ret = rend_service_del_ephemeral(service_id);
