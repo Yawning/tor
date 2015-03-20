@@ -652,9 +652,19 @@ rend_config_services(const or_options_t *options, int validate_only)
   if (old_service_list && !validate_only) {
     smartlist_t *surviving_services = smartlist_new();
 
-    /* Pull all the ephemeral services out of old_service_list and add them
-     * into rend_service_list so they remain active and surviving_service_list
-     * so the intro points don't get closed.
+    /* Preserve the existing ephemeral services.
+     *
+     * This is the ephemeral service equivalent of the "Copy introduction
+     * points to new services" block, except there's no copy required since
+     * the service structure isn't regenerated.
+     *
+     * After this is done, all ephemeral services will be:
+     *  * Removed from old_service_list, so the equivalent non-ephemeral code
+     *    will not attempt to preserve them.
+     *  * Added to the new rend_service_list (that previously only had the
+     *    services listed in the configuration).
+     *  * Added to surviving_services, which is the list of services that
+     *    will NOT have their intro point closed.
      */
     SMARTLIST_FOREACH(old_service_list, rend_service_t *, old, {
       if (!old->directory) {
