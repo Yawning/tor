@@ -785,7 +785,6 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
   }
 
   /* Initialize the service. */
-  tor_assert(smartlist_len(s->ports) > 0);
   if (rend_add_service(s)) {
     rend_service_free(s);
     return -1;
