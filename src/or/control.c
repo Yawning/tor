@@ -168,8 +168,6 @@ static int handle_control_add_onion(control_connection_t *conn, uint32_t len,
                                     const char *body);
 static int handle_control_del_onion(control_connection_t *conn, uint32_t len,
                                     const char *body);
-static int handle_control_get_onions(control_connection_t *conn, uint32_t len,
-                                     const char *body);
 static int write_stream_target_to_buf(entry_connection_t *conn, char *buf,
                                       size_t len);
 static void orconn_target_get_name(char *buf, size_t len,
@@ -2120,6 +2118,31 @@ getinfo_helper_events(control_connection_t *control_conn,
   return 0;
 }
 
+/** Implementation helper for GETINFO: knows how to enumerate hidden services
+ * created via the control port. */
+static int
+getinfo_helper_onions(control_connection_t *control_conn,
+                      const char *question, char **answer,
+                      const char **errmsg)
+{
+  smartlist_t *onion_list = NULL;
+
+  if (!strcmp(question, "onions/current")) {
+    onion_list = control_conn->ephemeral_onion_services;
+  } else if (!strcmp(question, "onions/detached")) {
+    onion_list = detached_onion_services;
+  } else {
+    return 0;
+  }
+  if (!onion_list || smartlist_len(onion_list) == 0) {
+    *errmsg = "No onion services of the specified type.";
+    return -1;
+  }
+  *answer = smartlist_join_strings(onion_list, "\r\n", 0, NULL);
+
+  return 0;
+}
+
 /** Callback function for GETINFO: on a given control connection, try to
  * answer the question <b>q</b> and store the newly-allocated answer in
  * *<b>a</b>. If an internal error occurs, return -1 and optionally set
@@ -2252,6 +2275,10 @@ static const getinfo_item_t getinfo_items[] = {
   ITEM("exit-policy/ipv4", policies, "IPv4 parts of exit policy"),
   ITEM("exit-policy/ipv6", policies, "IPv6 parts of exit policy"),
   PREFIX("ip-to-country/", geoip, "Perform a GEOIP lookup"),
+  ITEM("onions/current", onions,
+       "Onion services owned by the current control connection."),
+  ITEM("onions/detached", onions,
+       "Onion services detached from the control connection."),
   { NULL, NULL, NULL, 0 }
 };
 
@@ -3530,41 +3557,6 @@ out:
   return 0;
 }
 
-/** Implementation for the GET_ONIONS command. */
-static int
-handle_control_get_onions(control_connection_t *conn,
-                          uint32_t len,
-                          const char *body)
-{
-  smartlist_t *args;
-  (void) len; /* body is nul-terminated; it's safe to ignore the length */
-  args = smartlist_new();
-  smartlist_split_string(args, body, " ",
-                         SPLIT_SKIP_SPACE|SPLIT_IGNORE_BLANK, 0);
-
-  if (smartlist_len(args)) {
-    connection_printf_to_buf(conn, "512 Too many arguments to GET_ONIONS\r\n");
-  } else {
-    const smartlist_t *l[2] = {
-      conn->ephemeral_onion_services,
-      detached_onion_services
-    };
-    for (size_t i = 0; i < ARRAY_LENGTH(l); i++) {
-      if (l[i] == NULL)
-        continue;
-      SMARTLIST_FOREACH(l[i], const char *, service_id, {
-        connection_printf_to_buf(conn, "250-ServiceID=%s%s\r\n",
-                                 service_id, i ? " Flags=Detach" : "");
-      });
-    }
-    send_control_done(conn);
-  }
-
-  SMARTLIST_FOREACH(args, char *, cp, tor_free(cp));
-  smartlist_free(args);
-  return 0;
-}
-
 /** Called when <b>conn</b> has no more bytes left on its outbuf. */
 int
 connection_control_finished_flushing(control_connection_t *conn)
@@ -3880,9 +3872,6 @@ connection_control_process_inbuf(control_connection_t *conn)
     int ret = handle_control_del_onion(conn, cmd_data_len, args);
     memwipe(args, 0, cmd_data_len); /* Scrub the service id/pk. */
     if (ret)
-      return -1;
-  } else if (!strcasecmp(conn->incoming_cmd, "GET_ONIONS")) {
-    if (handle_control_get_onions(conn, cmd_data_len, args))
       return -1;
   } else {
     connection_printf_to_buf(conn, "510 Unrecognized command \"%s\"\r\n",
