@@ -3309,8 +3309,10 @@ handle_control_add_onion(control_connection_t *conn,
        *   * 'Detach' - Do not tie this onion service to any particular control
        *                connection.
        */
-      smartlist_t *flags = smartlist_new();
+      static const char *discard_flag = "DiscardPK";
+      static const char *detach_flag = "Detach";
 
+      smartlist_t *flags = smartlist_new();
       smartlist_split_string(flags, arg + strlen(flags_prefix), ",",
                              SPLIT_IGNORE_BLANK, 0);
       if (smartlist_len(flags) < 1) {
@@ -3319,9 +3321,9 @@ handle_control_add_onion(control_connection_t *conn,
       }
       SMARTLIST_FOREACH_BEGIN(flags, const char *, flag)
       {
-        if (!strcasecmp(flag, "DiscardPK")) {
+        if (!strcasecmp(flag, discard_flag)) {
           discard_pk = 1;
-        } else if (!strcasecmp(flag, "Detach")) {
+        } else if (!strcasecmp(flag, detach_flag)) {
           detach = 1;
         } else {
           connection_printf_to_buf(conn, "512 Invalid 'Flags' argument: %s\r\n",
@@ -3383,12 +3385,14 @@ handle_control_add_onion(control_connection_t *conn,
         /* "RSA1024", RSA 1024 bit, also currently "BEST" by default. */
         pk = crypto_pk_new();
         if (crypto_pk_generate_key(pk)) {
-          connection_printf_to_buf(conn, "551 Failed to generate RSA key\r\n");
+          connection_printf_to_buf(conn, "551 Failed to generate %s key\r\n",
+                                   key_type_rsa1024);
           goto done_keyargs;
         }
         if (!discard_pk) {
           if (crypto_pk_base64_encode(pk, &key_new_blob)) {
-            connection_printf_to_buf(conn, "551 Failed to encode RSA key\r\n");
+            connection_printf_to_buf(conn, "551 Failed to encode %s key\r\n",
+                                     key_type_rsa1024);
             goto done_keyargs;
           }
           key_new_alg = key_type_rsa1024;
