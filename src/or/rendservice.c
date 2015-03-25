@@ -732,6 +732,10 @@ rend_config_services(const or_options_t *options, int validate_only)
  * Returns 0 on success, and < 0 on failure, with -1 indicating an internal
  * error, -2 indicating address generation failure, -3 indicating a collision
  * with an existing address, and -4 indicating an invalid virtport/target.
+ * On success, service_id_out is set to a string suitable as a unique
+ * identifier for the newly created ephemeral service.  If a service id
+ * pointer is provided, it is the caller's responsibility to sanitize and
+ * free any provided service id.
  */
 int
 rend_service_add_ephemeral(crypto_pk_t *pk,
@@ -837,8 +841,7 @@ rend_service_del_ephemeral(const char *service_id)
                 oc->rend_data->onion_address);
       circuit_mark_for_close(circ, END_CIRC_REASON_FINISHED);
     }
-  }
-  SMARTLIST_FOREACH_END(circ);
+  } SMARTLIST_FOREACH_END(circ);
   smartlist_remove(rend_service_list, s);
   rend_service_free(s);
 

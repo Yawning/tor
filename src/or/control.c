@@ -3329,8 +3329,7 @@ handle_control_add_onion(control_connection_t *conn,
           bad = 1;
           break;
         }
-      }
-      SMARTLIST_FOREACH_END(flag);
+      } SMARTLIST_FOREACH_END(flag);
       SMARTLIST_FOREACH(flags, char *, cp, tor_free(cp));
       smartlist_free(flags);
       if (bad)
