@@ -1419,6 +1419,12 @@ crypto_pk_base64_encode(const crypto_pk_t *pk, char **priv_out)
 
   char *priv = tor_calloc(der_len, 2);
   if (base64_encode(priv, der_len * 2, (char *)der, der_len) >= 0) {
+    /* base64_encode() currently formats the encoded output PEM style with
+     * newlines.  Use tor_strstrip() to remove the whitespace, and then
+     * sanitize the tail of the buffer since it will contain Base64 encoded
+     * key material of a length equal to the number of '\r's and '\n's that
+     * were stripped out.
+     */
     tor_strstrip(priv, "\r\n");
     size_t priv_len = strlen(priv);
     memwipe(priv + priv_len, 0, 2 * der_len - priv_len);
