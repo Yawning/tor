@@ -24,6 +24,7 @@
 #include "compat.h"
 #include "util.h"
 #include "address.h"
+#include "netlink.h"
 #include "torlog.h"
 #include "container.h"
 #include "sandbox.h"
@@ -1588,6 +1589,10 @@ get_interface_address6,(int severity, sa_family_t family, tor_addr_t *addr))
   /* XXX really, this function should yield a smartlist of addresses. */
   smartlist_t *addrs;
   tor_assert(addr);
+
+  /* Try to do this the routing table aware smart way if possible. */
+  if (!get_interface_address_netlink(severity, family, addr))
+    return 0;
 
   /* Try to do this the smart way if possible. */
   if ((addrs = get_interface_addresses_raw(severity))) {

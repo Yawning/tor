@@ -930,6 +930,8 @@ AC_CHECK_HEADERS(
         inttypes.h \
         limits.h \
         linux/types.h \
+        linux/netlink.h \
+        linux/rtnetlink.h \
         machine/limits.h \
         malloc.h \
         malloc/malloc.h \
