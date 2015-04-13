@@ -281,7 +281,7 @@ netlink_parse_getaddr_msg(void *ctx, struct nlmsghdr *msg)
       case AF_INET:
       {
         struct in_addr *src = RTA_DATA(attr);
-        if ((size_t)attrlen > sizeof(*src)) {
+        if ((size_t)attrlen >= sizeof(*src)) {
           tor_addr_from_in(result->addr, src);
           found = 1;
         }
@@ -290,7 +290,7 @@ netlink_parse_getaddr_msg(void *ctx, struct nlmsghdr *msg)
       case AF_INET6:
       {
         struct in6_addr *src = RTA_DATA(attr);
-        if ((size_t)attrlen > sizeof(*src)) {
+        if ((size_t)attrlen >= sizeof(*src)) {
           tor_addr_from_in6(result->addr, src);
           found = 1;
         }
