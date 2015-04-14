@@ -2564,7 +2564,7 @@ base64_encode(char *dest, size_t destlen, const char *src, size_t srclen,
     return -1;
   }
 
-#undef ENCODE_ACC
+#undef ENCODE_N
 #undef ENCODE_PAD
 #undef ENCODE_CHAR
 
