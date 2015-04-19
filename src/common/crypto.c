@@ -2701,7 +2701,7 @@ base64_decode(char *dest, size_t destlen, const char *src, size_t srclen)
 #undef PAD
 
 /** Base64 encode DIGEST_LINE bytes from <b>digest</b>, remove the trailing =
- * and characters, and store the nul-terminated result in the first
+ * characters, and store the nul-terminated result in the first
  * BASE64_DIGEST_LEN+1 bytes of <b>d64</b>.  */
 int
 digest_to_base64(char *d64, const char *digest)
