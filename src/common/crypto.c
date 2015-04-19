@@ -2504,15 +2504,15 @@ base64_encode(char *dest, size_t destlen, const char *src, size_t srclen,
    * processing 48 bytes of input at a time in the OpenSSL format case.
    */
 #define ENCODE_CHAR(ch) \
-  { \
-    *d++ = ch; \
-    if (flags & BASE64_ENCODE_OPENSSL) { \
-      if (++linelen % BASE64_OPENSSL_LINELEN == 0) { \
-        linelen = 0; \
-        *d++ = '\n'; \
-      } \
-    } \
-  }
+  STMT_BEGIN                                                    \
+    *d++ = ch;                                                  \
+    if (flags & BASE64_ENCODE_OPENSSL) {                        \
+      if (++linelen % BASE64_OPENSSL_LINELEN == 0) {            \
+        linelen = 0;                                            \
+        *d++ = '\n';                                            \
+      }                                                         \
+    }                                                           \
+  STMT_END
 
 #define ENCODE_N(idx) \
   ENCODE_CHAR(base64_encode_table[(n >> ((3 - idx) * 6)) & 0x3f])
