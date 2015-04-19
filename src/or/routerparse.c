@@ -665,7 +665,7 @@ router_get_dirobj_signature(const char *digest,
 
   i = strlen(buf);
   if (base64_encode(buf+i, buf_len-i, signature, siglen,
-                    BASE64_ENCODE_OPENSSL) < 0) {
+                    BASE64_ENCODE_MULTILINE) < 0) {
     log_warn(LD_BUG,"couldn't base64-encode signature");
     goto err;
   }

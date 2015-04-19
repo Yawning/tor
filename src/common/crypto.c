@@ -2431,9 +2431,9 @@ smartlist_shuffle(smartlist_t *sl)
 /** Return the Base64 encoded size of <b>srclen</b> bytes of data in
  * bytes.
  *
- * If <b>flags</b>&amp;BASE64_ENCODE_OPENSSL is true, return the size
- * of the encoded output in  OpenSSL EVP_Encode() format (64 character
- * `\n` terminated lines).
+ * If <b>flags</b>&amp;BASE64_ENCODE_MULTILINE is true, return the size
+ * of the encoded output as multiline output (64 character, `\n' terminated
+ * lines).
  */
 size_t
 base64_encode_size(size_t srclen, int flags)
@@ -2445,7 +2445,7 @@ base64_encode_size(size_t srclen, int flags)
     return 0;
 
   enclen = ((srclen - 1) / 3) * 4 + 4;
-  if (flags & BASE64_ENCODE_OPENSSL) {
+  if (flags & BASE64_ENCODE_MULTILINE) {
     size_t remainder = enclen % BASE64_OPENSSL_LINELEN;
     enclen += enclen / BASE64_OPENSSL_LINELEN;
     if (remainder)
@@ -2472,8 +2472,8 @@ static const char base64_encode_table[64] = {
  * bytes. Return the number of bytes written on success; -1 if
  * destlen is too short, or other failure.
  *
- * If <b>flags</b>&amp;BASE64_ENCODE_OPENSSL is true, return encoded output
- * in OpenSSL EVP_Encode() format (64 character `\n` terminated lines).
+ * If <b>flags</b>&amp;BASE64_ENCODE_MULTILINE is true, return encoded 
+ * output in multiline format (64 character, `\n' terminated lines).
  */
 int
 base64_encode(char *dest, size_t destlen, const char *src, size_t srclen,
@@ -2500,13 +2500,13 @@ base64_encode(char *dest, size_t destlen, const char *src, size_t srclen,
   memset(dest, 0, enclen);
 
   /* XXX/Yawning: If this ends up being too slow, this can be sped up
-   * by separating the OpenSSL format case and the normal case, and
-   * processing 48 bytes of input at a time in the OpenSSL format case.
+   * by separating the multiline format case and the normal case, and
+   * processing 48 bytes of input at a time when newlines are desired.
    */
 #define ENCODE_CHAR(ch) \
   STMT_BEGIN                                                    \
     *d++ = ch;                                                  \
-    if (flags & BASE64_ENCODE_OPENSSL) {                        \
+    if (flags & BASE64_ENCODE_MULTILINE) {                      \
       if (++linelen % BASE64_OPENSSL_LINELEN == 0) {            \
         linelen = 0;                                            \
         *d++ = '\n';                                            \
@@ -2568,8 +2568,8 @@ base64_encode(char *dest, size_t destlen, const char *src, size_t srclen,
 #undef ENCODE_PAD
 #undef ENCODE_CHAR
 
-  /* OpenSSL style output always includes at least one newline. */
-  if (flags & BASE64_ENCODE_OPENSSL && linelen != 0)
+  /* Multiline output always includes at least one newline. */
+  if (flags & BASE64_ENCODE_MULTILINE && linelen != 0)
     *d++ = '\n';
 
   tor_assert(d - dest == (ptrdiff_t)enclen);

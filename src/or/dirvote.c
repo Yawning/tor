@@ -2245,7 +2245,7 @@ networkstatus_format_signatures(networkstatus_t *consensus,
                      digest_name, id, sk);
       }
       base64_encode(buf, sizeof(buf), sig->signature, sig->signature_len,
-                    BASE64_ENCODE_OPENSSL);
+                    BASE64_ENCODE_MULTILINE);
       strlcat(buf, "-----END SIGNATURE-----\n", sizeof(buf));
       smartlist_add(elements, tor_strdup(buf));
     } SMARTLIST_FOREACH_END(sig);
@@ -3460,7 +3460,7 @@ dirvote_create_microdescriptor(const routerinfo_t *ri, int consensus_method)
     char kbuf[128];
     base64_encode(kbuf, sizeof(kbuf),
                   (const char*)ri->onion_curve25519_pkey->public_key,
-                  CURVE25519_PUBKEY_LEN, BASE64_ENCODE_OPENSSL);
+                  CURVE25519_PUBKEY_LEN, BASE64_ENCODE_MULTILINE);
     smartlist_add_asprintf(chunks, "ntor-onion-key %s", kbuf);
   }
 

@@ -666,12 +666,12 @@ test_crypto_formats(void *arg)
   tt_assert(digest_from_base64(data3, "###") < 0);
 
   for (i = 0; i < 256; i++) {
-    /* Test the OpenSSL format Base64 encoder with 0 .. 256 bytes of
+    /* Test the multiline format Base64 encoder with 0 .. 256 bytes of
      * output against OpenSSL.
      */
-    const size_t enclen = base64_encode_size(i, BASE64_ENCODE_OPENSSL);
+    const size_t enclen = base64_encode_size(i, BASE64_ENCODE_MULTILINE);
     data1[i] = i;
-    j = base64_encode(data2, 1024, data1, i, BASE64_ENCODE_OPENSSL);
+    j = base64_encode(data2, 1024, data1, i, BASE64_ENCODE_MULTILINE);
     tt_int_op(j, OP_EQ, enclen);
     j = base64_encode_evp(data3, data1, i);
     tt_int_op(j, OP_EQ, enclen);
