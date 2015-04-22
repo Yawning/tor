@@ -3516,16 +3516,16 @@ handle_control_del_onion(control_connection_t *conn,
    * explicitly belongs to a different control connection, and an error
    * should be returned.
    */
-  smartlist_t *l[2] = {
+  smartlist_t *services[2] = {
     conn->ephemeral_onion_services,
     detached_onion_services
   };
   smartlist_t *onion_services = NULL;
   int idx = -1;
-  for (size_t i = 0; i < ARRAY_LENGTH(l); i++) {
-    idx = smartlist_string_pos(l[i], service_id);
+  for (size_t i = 0; i < ARRAY_LENGTH(services); i++) {
+    idx = smartlist_string_pos(services[i], service_id);
     if (idx != -1) {
-      onion_services = l[i];
+      onion_services = services[i];
       break;
     }
   }
