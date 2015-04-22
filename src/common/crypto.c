@@ -1451,7 +1451,7 @@ crypto_pk_base64_decode(const char *str, size_t len)
   char *der = tor_malloc_zero(len + 1);
   size_t der_len = base64_decode(der, len, str, len);
   if (der_len <= 0) {
-    log_warn(LD_CRYPTO, "Stored DER RSA private key seems corrupted (base64).");
+    log_warn(LD_CRYPTO, "Stored RSA private key seems corrupted (base64).");
     goto out;
   }
 
@@ -1471,7 +1471,7 @@ crypto_pk_base64_decode(const char *str, size_t len)
     goto out;
   }
 
-out:
+ out:
   memwipe(der, 0, der_len);
   tor_free(der);
   return pk;

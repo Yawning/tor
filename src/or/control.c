@@ -3314,7 +3314,8 @@ handle_control_add_onion(control_connection_t *conn,
         } else if (!strcasecmp(flag, detach_flag)) {
           detach = 1;
         } else {
-          connection_printf_to_buf(conn, "512 Invalid 'Flags' argument: %s\r\n",
+          connection_printf_to_buf(conn,
+                                   "512 Invalid 'Flags' argument: %s\r\n",
                                    escaped(flag));
           bad = 1;
           break;
@@ -3397,7 +3398,7 @@ handle_control_add_onion(control_connection_t *conn,
     tor_assert(pk);
     bad = 0;
   }
-done_keyargs:
+ done_keyargs:
   SMARTLIST_FOREACH(key_args, char *, cp, {
     memwipe(cp, 0, strlen(cp));
     tor_free(cp);
@@ -3469,7 +3470,7 @@ done_keyargs:
     tor_free(key_new_blob);
   }
 
-out:
+ out:
   if (port_cfgs) {
     SMARTLIST_FOREACH(port_cfgs, rend_service_port_config_t*, p,
                       rend_service_port_config_free(p));
@@ -3544,7 +3545,7 @@ handle_control_del_onion(control_connection_t *conn,
     send_control_done(conn);
   }
 
-out:
+ out:
   SMARTLIST_FOREACH(args, char *, cp, {
     memwipe(cp, 0, strlen(cp));
     tor_free(cp);

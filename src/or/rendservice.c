@@ -400,7 +400,7 @@ rend_service_parse_port_config(const char *string, const char *sep,
     ret = config_parse_unix_port(addrport, &socket_path);
     if (ret < 0 && ret != -ENOENT) {
       if (ret == -EINVAL)
-        if(err_msg_out)
+        if (err_msg_out)
           err_msg = tor_strdup("Empty socket path in hidden service port "
                                "configuration.");
 
@@ -824,7 +824,7 @@ int
 rend_service_del_ephemeral(const char *service_id)
 {
   rend_service_t *s;
-  if (!rend_valid_service_id(service_id)){
+  if (!rend_valid_service_id(service_id)) {
     log_warn(LD_CONFIG, "Requested malformed Onion Service id for removal.");
     return -1;
   }
