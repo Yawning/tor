@@ -247,6 +247,7 @@ rend_service_free_all(void)
 }
 
 /** Validate <b>service</b> and add it to rend_service_list if possible.
+ * Return 0 on success and -1 on failure.
  */
 static int
 rend_add_service(rend_service_t *service)
