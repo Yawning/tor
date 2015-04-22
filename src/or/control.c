@@ -3260,7 +3260,6 @@ handle_control_add_onion(control_connection_t *conn,
 {
   smartlist_t *args;
   size_t arg_len;
-  int bad = 0;
   (void) len; /* body is nul-terminated; it's safe to ignore the length */
   args = getargs_helper("ADD_ONION", conn, body, 2, -1);
   if (!args)
@@ -3301,6 +3300,8 @@ handle_control_add_onion(control_connection_t *conn,
       static const char *detach_flag = "Detach";
 
       smartlist_t *flags = smartlist_new();
+      int bad = 0;
+
       smartlist_split_string(flags, arg + strlen(flags_prefix), ",",
                              SPLIT_IGNORE_BLANK, 0);
       if (smartlist_len(flags) < 1) {
@@ -3335,80 +3336,23 @@ handle_control_add_onion(control_connection_t *conn,
     goto out;
   }
 
-  /* Parse the "keytype:keyblob" argument.
-   * Note: Errors are intentionally vague to prevent from echoing potentially
-   * sensitive key material on the event of user error.
-   */
-  smartlist_t *key_args = smartlist_new();
+  /* Parse the "keytype:keyblob" argument. */
   crypto_pk_t *pk = NULL;
   const char *key_new_alg = NULL;
   char *key_new_blob = NULL;
+  char *err_msg = NULL;
 
-  bad = 1; /* Assume failure, cleared on success. */
-  smartlist_split_string(key_args, smartlist_get(args, 0), ":",
-                         SPLIT_IGNORE_BLANK, 0);
-  if (smartlist_len(key_args) != 2) {
-    connection_printf_to_buf(conn, "512 Invalid key type/blob\r\n");
-  } else {
-    static const char *key_type_new = "NEW";
-    static const char *key_type_best = "BEST";
-    static const char *key_type_rsa1024 = "RSA1024";
-
-    const char *key_type = smartlist_get(key_args, 0);
-    const char *key_blob = smartlist_get(key_args, 1);
-    if (!strcasecmp(key_type_rsa1024, key_type)) {
-      /* Loading a pre-existing RSA1024 key. */
-      pk = crypto_pk_base64_decode(key_blob, strlen(key_blob));
-      if (!pk) {
-        connection_printf_to_buf(conn, "512 Failed to decode RSA key\r\n");
-        goto done_keyargs;
-      }
-      if (crypto_pk_num_bits(pk) != PK_BYTES*8) {
-        connection_printf_to_buf(conn, "512 Invalid RSA key size\r\n");
-        goto done_keyargs;
-      }
-    } else if (!strcasecmp(key_type_new, key_type)) {
-      /* Generating a new key, algorithm specified in the keyBlob. */
-      if (!strcasecmp(key_type_rsa1024, key_blob) ||
-          !strcasecmp(key_type_best, key_blob)) {
-        /* "RSA1024", RSA 1024 bit, also currently "BEST" by default. */
-        pk = crypto_pk_new();
-        if (crypto_pk_generate_key(pk)) {
-          connection_printf_to_buf(conn, "551 Failed to generate %s key\r\n",
-                                   key_type_rsa1024);
-          goto done_keyargs;
-        }
-        if (!discard_pk) {
-          if (crypto_pk_base64_encode(pk, &key_new_blob)) {
-            connection_printf_to_buf(conn, "551 Failed to encode %s key\r\n",
-                                     key_type_rsa1024);
-            goto done_keyargs;
-          }
-          key_new_alg = key_type_rsa1024;
-        }
-      } else {
-        connection_printf_to_buf(conn, "513 Invalid key type\r\n");
-        goto done_keyargs;
-      }
-    } else {
-      connection_printf_to_buf(conn, "513 Invalid key type\r\n");
-      goto done_keyargs;
+  pk = add_onion_helper_keyarg(smartlist_get(args, 0), discard_pk,
+                               &key_new_alg, &key_new_blob,
+                               &err_msg);
+  if (!pk) {
+    if (err_msg) {
+      connection_write_str_to_buf(err_msg, conn);
+      tor_free(err_msg);
     }
-    /* Succeded in either loading or generating a new key. */
-    tor_assert(pk);
-    bad = 0;
-  }
- done_keyargs:
-  SMARTLIST_FOREACH(key_args, char *, cp, {
-    memwipe(cp, 0, strlen(cp));
-    tor_free(cp);
-  });
-  smartlist_free(key_args);
-  if (bad) {
-    if (pk)
-      crypto_pk_free(pk);
     goto out;
   }
+  tor_assert(!err_msg);
 
   /* Create the HS, using private key pk, and port config port_cfg.
    * rend_service_add_ephemeral() will take ownership of pk and port_cfg,
@@ -3483,6 +3427,101 @@ handle_control_add_onion(control_connection_t *conn,
   });
   smartlist_free(args);
   return 0;
+}
+
+/** Helper function to handle parsing the KeyType:KeyBlob argument to the
+ * ADD_ONION command. Return a new crypto_pk_t and if a new key was generated
+ * and the public key not discarded, the algorithm and serialized public key,
+ * or NULL and an optional control protocol error message on failure.  The
+ * caller is responsible for freeing the returned key_new_blob and err_msg.
+ *
+ * Note: The error messages returned are deliberately vague to avoid echoing
+ * key material.
+ */
+STATIC crypto_pk_t *
+add_onion_helper_keyarg(const char *arg, int discard_pk,
+                        const char **key_new_alg_out, char **key_new_blob_out,
+                        char **err_msg_out)
+{
+  smartlist_t *key_args = smartlist_new();
+  crypto_pk_t *pk = NULL;
+  const char *key_new_alg = NULL;
+  char *key_new_blob = NULL;
+  char *err_msg = NULL;
+  int ok = 0;
+
+  smartlist_split_string(key_args, arg, ":", SPLIT_IGNORE_BLANK, 0);
+  if (smartlist_len(key_args) != 2) {
+    err_msg = tor_strdup("512 Invalid key type/blob\r\n");
+    goto err;
+  }
+
+  /* The format is "KeyType:KeyBlob". */
+  static const char *key_type_new = "NEW";
+  static const char *key_type_best = "BEST";
+  static const char *key_type_rsa1024 = "RSA1024";
+
+  const char *key_type = smartlist_get(key_args, 0);
+  const char *key_blob = smartlist_get(key_args, 1);
+
+  if (!strcasecmp(key_type_rsa1024, key_type)) {
+    /* "RSA:<Base64 Blob>" - Loading a pre-existing RSA1024 key. */
+    pk = crypto_pk_base64_decode(key_blob, strlen(key_blob));
+    if (!pk) {
+      err_msg = tor_strdup("512 Failed to decode RSA key\r\n");
+      goto err;
+    }
+    if (crypto_pk_num_bits(pk) != PK_BYTES*8) {
+      err_msg = tor_strdup("512 Invalid RSA key size\r\n");
+      goto err;
+    }
+  } else if (!strcasecmp(key_type_new, key_type)) {
+    /* "NEW:<Algorithm>" - Generating a new key, blob as algorithm. */
+    if (!strcasecmp(key_type_rsa1024, key_blob) ||
+        !strcasecmp(key_type_best, key_blob)) {
+      /* "RSA1024", RSA 1024 bit, also currently "BEST" by default. */
+      pk = crypto_pk_new();
+      if (crypto_pk_generate_key(pk)) {
+        tor_asprintf(&err_msg, "551 Failed to generate %s key\r\n",
+                     key_type_rsa1024);
+        goto err;
+      }
+      if (!discard_pk) {
+        if (crypto_pk_base64_encode(pk, &key_new_blob)) {
+          tor_asprintf(&err_msg, "551 Failed to encode %s key\r\n",
+                       key_type_rsa1024);
+          goto err;
+        }
+        key_new_alg = key_type_rsa1024;
+      }
+    } else {
+      err_msg = tor_strdup("513 Invalid key type\r\n");
+      goto err;
+    }
+  } else {
+    err_msg = tor_strdup("513 Invalid key type\r\n");
+    goto err;
+  }
+
+  /* Succeded in loading or generating a private key. */
+  tor_assert(pk);
+  ok = 1;
+
+ err:
+  SMARTLIST_FOREACH(key_args, char *, cp, {
+    memwipe(cp, 0, strlen(cp));
+    tor_free(cp);
+  });
+
+  if (!ok) {
+    crypto_pk_free(pk);
+    pk = NULL;
+  }
+  if (err_msg_out) *err_msg_out = err_msg;
+  *key_new_alg_out = key_new_alg;
+  *key_new_blob_out = key_new_blob;
+
+  return pk;
 }
 
 /** Called when we get a DEL_ONION command; parse the body, and remove
