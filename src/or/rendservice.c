@@ -730,15 +730,10 @@ rend_config_services(const or_options_t *options, int validate_only)
 }
 
 /** Add the ephemeral service <b>pk</b>/<b>port_cfg_strs</b> if possible.
- * Returns 0 on success, and < 0 on failure, with -1 indicating an internal
- * error, -2 indicating address generation failure, -3 indicating a collision
- * with an existing address, and -4 indicating an invalid virtport/target.
- * On success, service_id_out is set to a string suitable as a unique
- * identifier for the newly created ephemeral service.  If a service id
- * pointer is provided, it is the caller's responsibility to sanitize and
- * free any provided service id.
+ *
+ * Return an appropriate rend_service_add_ephemeral_status_t.
  */
-int
+rend_service_add_ephemeral_status_t
 rend_service_add_ephemeral(crypto_pk_t *pk,
                            const smartlist_t *port_cfg_strs,
                            char **service_id_out)
@@ -754,7 +749,7 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
   s->ports = smartlist_new();
   if (rend_service_derive_key_digests(s)<0) {
     rend_service_free(s);
-    return -2;
+    return RSAE_BADPRIVKEY;
   }
 
   /* Enforcing pk/id uniqueness should be done by rend_service_load_keys(), but
@@ -764,12 +759,12 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
     log_warn(LD_CONFIG, "Onion Service private key collides with an "
              "existing service.");
     rend_service_free(s);
-    return -3;
+    return RSAE_ADDREXISTS;
   }
   if (rend_service_get_by_service_id(s->service_id)) {
     log_warn(LD_CONFIG, "Onion Service id collides with an existing service.");
     rend_service_free(s);
-    return -3;
+    return RSAE_ADDREXISTS;
   }
 
   /* Do the rest of the initialization, now that the key has been validated. */
@@ -779,25 +774,25 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
     rend_service_port_config_t *p = parse_port_config(cp);
     if (!p) {
       rend_service_free(s);
-      return -4;
+      return RSAE_BADVIRTPORT;
     }
     smartlist_add(s->ports, p);
   });
   if (smartlist_len(s->ports) == 0) {
     log_warn(LD_CONFIG, "At least one VIRTPORT/TARGET must be specified.");
     rend_service_free(s);
-    return -4;
+    return RSAE_BADVIRTPORT;
   }
 
   /* Initialize the service. */
   if (rend_add_service(s)) {
     rend_service_free(s);
-    return -1;
+    return RSAE_INTERNAL;
   }
   *service_id_out = tor_strdup(s->service_id);
 
   log_debug(LD_CONFIG, "Added ephemeral Onion Service: %s", s->service_id);
-  return 0;
+  return RSAE_OKAY;
 }
 
 /** Remove the ephemeral service <b>service_id</b> if possible.  Returns 0 on
