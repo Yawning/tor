@@ -3431,7 +3431,7 @@ handle_control_add_onion(control_connection_t *conn,
 
 /** Helper function to handle parsing the KeyType:KeyBlob argument to the
  * ADD_ONION command. Return a new crypto_pk_t and if a new key was generated
- * and the public key not discarded, the algorithm and serialized public key,
+ * and the private key not discarded, the algorithm and serialized private key,
  * or NULL and an optional control protocol error message on failure.  The
  * caller is responsible for freeing the returned key_new_blob and err_msg.
  *
