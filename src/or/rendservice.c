@@ -71,7 +71,7 @@ static ssize_t rend_service_parse_intro_for_v3(
 /** Represents the mapping from a virtual port of a rendezvous service to
  * a real port on some IP.
  */
-typedef struct rend_service_port_config_t {
+typedef struct rend_service_port_config_s {
   /* The incoming HS virtual port we're mapping */
   uint16_t virtual_port;
   /* Is this an AF_UNIX port? */
@@ -210,7 +210,8 @@ rend_service_free(rend_service_t *service)
     return;
 
   tor_free(service->directory);
-  SMARTLIST_FOREACH(service->ports, void*, p, tor_free(p));
+  SMARTLIST_FOREACH(service->ports, rend_service_port_config_t*, p,
+                    rend_service_port_config_free(p));
   smartlist_free(service->ports);
   if (service->private_key)
     crypto_pk_free(service->private_key);
@@ -346,15 +347,17 @@ rend_service_port_config_new(const char *socket_path)
   return conf;
 }
 
-/** Parses a real-port to virtual-port mapping and returns a new
- * rend_service_port_config_t.
+/** Parses a real-port to virtual-port mapping separated by the provided
+ * separator and returns a new rend_service_port_config_t, or NULL and an
+ * optional error string on failure.
  *
- * The format is: VirtualPort (IP|RealPort|IP:RealPort|'socket':path)?
+ * The format is: VirtualPort SEP (IP|RealPort|IP:RealPort|'socket':path)?
  *
  * IP defaults to 127.0.0.1; RealPort defaults to VirtualPort.
  */
-static rend_service_port_config_t *
-parse_port_config(const char *string)
+rend_service_port_config_t *
+rend_service_parse_port_config(const char *string, const char *sep,
+                               char **err_msg_out)
 {
   smartlist_t *sl;
   int virtport;
@@ -365,19 +368,24 @@ parse_port_config(const char *string)
   rend_service_port_config_t *result = NULL;
   unsigned int is_unix_addr = 0;
   char *socket_path = NULL;
+  char *err_msg = NULL;
 
   sl = smartlist_new();
-  smartlist_split_string(sl, string, " ",
+  smartlist_split_string(sl, string, sep,
                          SPLIT_SKIP_SPACE|SPLIT_IGNORE_BLANK, 0);
   if (smartlist_len(sl) < 1 || smartlist_len(sl) > 2) {
-    log_warn(LD_CONFIG, "Bad syntax in hidden service port configuration.");
+    if (err_msg_out)
+      err_msg = tor_strdup("Bad syntax in hidden service port configuration.");
+
     goto err;
   }
 
   virtport = (int)tor_parse_long(smartlist_get(sl,0), 10, 1, 65535, NULL,NULL);
   if (!virtport) {
-    log_warn(LD_CONFIG, "Missing or invalid port %s in hidden service port "
-             "configuration", escaped(smartlist_get(sl,0)));
+    if (err_msg_out)
+      tor_asprintf(&err_msg, "Missing or invalid port %s in hidden service "
+                   "port configuration", escaped(smartlist_get(sl,0)));
+
     goto err;
   }
 
@@ -391,10 +399,11 @@ parse_port_config(const char *string)
     addrport = smartlist_get(sl,1);
     ret = config_parse_unix_port(addrport, &socket_path);
     if (ret < 0 && ret != -ENOENT) {
-      if (ret == -EINVAL) {
-        log_warn(LD_CONFIG,
-                 "Empty socket path in hidden service port configuration.");
-      }
+      if (ret == -EINVAL)
+        if(err_msg_out)
+          err_msg = tor_strdup("Empty socket path in hidden service port "
+                               "configuration.");
+
       goto err;
     }
     if (socket_path) {
@@ -402,8 +411,10 @@ parse_port_config(const char *string)
     } else if (strchr(addrport, ':') || strchr(addrport, '.')) {
       /* else try it as an IP:port pair if it has a : or . in it */
       if (tor_addr_port_lookup(addrport, &addr, &p)<0) {
-        log_warn(LD_CONFIG,"Unparseable address in hidden service port "
-                 "configuration.");
+        if (err_msg_out)
+          err_msg = tor_strdup("Unparseable address in hidden service port "
+                               "configuration.");
+
         goto err;
       }
       realport = p?p:virtport;
@@ -411,8 +422,11 @@ parse_port_config(const char *string)
       /* No addr:port, no addr -- must be port. */
       realport = (int)tor_parse_long(addrport, 10, 1, 65535, NULL, NULL);
       if (!realport) {
-        log_warn(LD_CONFIG,"Unparseable or out-of-range port %s in hidden "
-                 "service port configuration.", escaped(addrport));
+        if (err_msg_out)
+          tor_asprintf(&err_msg, "Unparseable or out-of-range port %s in "
+                       "hidden service port configuration.",
+                       escaped(addrport));
+
         goto err;
       }
       tor_addr_from_ipv4h(&addr, 0x7F000001u); /* Default to 127.0.0.1 */
@@ -430,11 +444,19 @@ parse_port_config(const char *string)
   }
 
  err:
+  if (err_msg_out) *err_msg_out = err_msg;
   SMARTLIST_FOREACH(sl, char *, c, tor_free(c));
   smartlist_free(sl);
   if (socket_path) tor_free(socket_path);
 
   return result;
+}
+
+/** Release all storage held in a rend_service_port_config_t. */
+void
+rend_service_port_config_free(rend_service_port_config_t *p)
+{
+  tor_free(p);
 }
 
 /** Set up rend_service_list, based on the values of HiddenServiceDir and
@@ -478,11 +500,16 @@ rend_config_services(const or_options_t *options, int validate_only)
        return -1;
      }
      if (!strcasecmp(line->key, "HiddenServicePort")) {
-       portcfg = parse_port_config(line->value);
+       char *err_msg = NULL;
+       portcfg = rend_service_parse_port_config(line->value, " ", &err_msg);
        if (!portcfg) {
+         if (err_msg)
+           log_warn(LD_CONFIG, "%s", err_msg);
+         tor_free(err_msg);
          rend_service_free(service);
          return -1;
        }
+       tor_assert(!err_msg);
        smartlist_add(service->ports, portcfg);
      } else if (!strcasecmp(line->key, "HiddenServiceAllowUnknownPorts")) {
        service->allow_unknown_ports = (int)tor_parse_long(line->value,
@@ -729,13 +756,17 @@ rend_config_services(const or_options_t *options, int validate_only)
   return 0;
 }
 
-/** Add the ephemeral service <b>pk</b>/<b>port_cfg_strs</b> if possible.
+/** Add the ephemeral service <b>pk</b>/<b>ports</b> if possible.
+ *
+ * Regardless of sucess/failure, callers should not touch pk/ports after
+ * calling this routine, and may assume that correct cleanup has been done
+ * on failure.
  *
  * Return an appropriate rend_service_add_ephemeral_status_t.
  */
 rend_service_add_ephemeral_status_t
 rend_service_add_ephemeral(crypto_pk_t *pk,
-                           const smartlist_t *port_cfg_strs,
+                           smartlist_t *ports,
                            char **service_id_out)
 {
   *service_id_out = NULL;
@@ -746,10 +777,18 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
   s->directory = NULL; /* This indicates the service is ephemeral. */
   s->private_key = pk;
   s->auth_type = REND_NO_AUTH;
-  s->ports = smartlist_new();
-  if (rend_service_derive_key_digests(s)<0) {
+  s->ports = ports;
+  s->intro_period_started = time(NULL);
+  s->n_intro_points_wanted = NUM_INTRO_POINTS_DEFAULT;
+  if (rend_service_derive_key_digests(s) < 0) {
     rend_service_free(s);
     return RSAE_BADPRIVKEY;
+  }
+
+  if (!s->ports || smartlist_len(s->ports) == 0) {
+    log_warn(LD_CONFIG, "At least one VIRTPORT/TARGET must be specified.");
+    rend_service_free(s);
+    return RSAE_BADVIRTPORT;
   }
 
   /* Enforcing pk/id uniqueness should be done by rend_service_load_keys(), but
@@ -765,23 +804,6 @@ rend_service_add_ephemeral(crypto_pk_t *pk,
     log_warn(LD_CONFIG, "Onion Service id collides with an existing service.");
     rend_service_free(s);
     return RSAE_ADDREXISTS;
-  }
-
-  /* Do the rest of the initialization, now that the key has been validated. */
-  s->intro_period_started = time(NULL);
-  s->n_intro_points_wanted = NUM_INTRO_POINTS_DEFAULT;
-  SMARTLIST_FOREACH(port_cfg_strs, const char*, cp, {
-    rend_service_port_config_t *p = parse_port_config(cp);
-    if (!p) {
-      rend_service_free(s);
-      return RSAE_BADVIRTPORT;
-    }
-    smartlist_add(s->ports, p);
-  });
-  if (smartlist_len(s->ports) == 0) {
-    log_warn(LD_CONFIG, "At least one VIRTPORT/TARGET must be specified.");
-    rend_service_free(s);
-    return RSAE_BADVIRTPORT;
   }
 
   /* Initialize the service. */

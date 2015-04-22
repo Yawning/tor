@@ -3271,7 +3271,7 @@ handle_control_add_onion(control_connection_t *conn,
    * material first, since there's no reason to touch that at all if any of
    * the other arguments are malformed.
    */
-  smartlist_t *port_cfg = smartlist_new();
+  smartlist_t *port_cfgs = smartlist_new();
   int discard_pk = 0;
   int detach = 0;
   for (size_t i = 1; i < arg_len; i++) {
@@ -3281,27 +3281,15 @@ handle_control_add_onion(control_connection_t *conn,
     const char *arg = smartlist_get(args, i);
     if (!strcasecmpstart(arg, port_prefix)) {
       /* "Port=VIRTPORT[,TARGET]". */
-      char *port_str = tor_strdup(arg + strlen(port_prefix));
-      char *comma_pos;
+      const char *port_str = arg + strlen(port_prefix);
 
-      /* Convert the Port argument value into a form capable of being parsed
-       * by rendservice.c:parse_port_config(), and do some minor sanity
-       * checking.
-       */
-      smartlist_add(port_cfg, port_str); /* Always add, easy cleanup. */
-      int virtport = (int)tor_parse_long(port_str, 10, 1, 65535, NULL,
-                                         &comma_pos);
-      if (!virtport) {
-        /* That's odd, the argument body doesn't begin with a port. */
-        connection_printf_to_buf(conn, "512 Invalid VIRTPORT\r\n");
-        goto out;
-      } else if (*comma_pos == ',') {
-        /* The first comma if any is separating the VIRTPORT and TARGET. */
-        *comma_pos = ' ';
-      } else if (*comma_pos != '\0') { /* Missing ",TARGET" is ok. */
+      rend_service_port_config_t *cfg =
+          rend_service_parse_port_config(port_str, ",", NULL);
+      if (!cfg) {
         connection_printf_to_buf(conn, "512 Invalid VIRTPORT/TARGET\r\n");
         goto out;
       }
+      smartlist_add(port_cfgs, cfg);
     } else if (!strcasecmpstart(arg, flags_prefix)) {
       /* "Flags=Flag[,Flag]", where Flag can be:
        *   * 'DiscardPK' - If tor generates the keypair, do not include it in
@@ -3341,7 +3329,7 @@ handle_control_add_onion(control_connection_t *conn,
       goto out;
     }
   }
-  if (smartlist_len(port_cfg) == 0) {
+  if (smartlist_len(port_cfgs) == 0) {
     connection_printf_to_buf(conn, "512 Missing 'Port' argument\r\n");
     goto out;
   }
@@ -3422,10 +3410,12 @@ done_keyargs:
   }
 
   /* Create the HS, using private key pk, and port config port_cfg.
-   * rend_service_add_ephemeral() will destroy pk on failure.
+   * rend_service_add_ephemeral() will take ownership of pk and port_cfg,
+   * regardless of success/failure.
    */
   char *service_id = NULL;
-  int ret = rend_service_add_ephemeral(pk, port_cfg, &service_id);
+  int ret = rend_service_add_ephemeral(pk, port_cfgs, &service_id);
+  port_cfgs = NULL; /* port_cfgs is now owned by the rendservice code. */
   switch (ret) {
   case RSAE_OKAY:
   {
@@ -3480,8 +3470,11 @@ done_keyargs:
   }
 
 out:
-  SMARTLIST_FOREACH(port_cfg, char *, cp, tor_free(cp));
-  smartlist_free(port_cfg);
+  if (port_cfgs) {
+    SMARTLIST_FOREACH(port_cfgs, rend_service_port_config_t*, p,
+                      rend_service_port_config_free(p));
+    smartlist_free(port_cfgs);
+  }
 
   SMARTLIST_FOREACH(args, char *, cp, {
     memwipe(cp, 0, strlen(cp));
