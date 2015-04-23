@@ -71,7 +71,7 @@ static ssize_t rend_service_parse_intro_for_v3(
 /** Represents the mapping from a virtual port of a rendezvous service to
  * a real port on some IP.
  */
-typedef struct rend_service_port_config_s {
+struct rend_service_port_config_s {
   /* The incoming HS virtual port we're mapping */
   uint16_t virtual_port;
   /* Is this an AF_UNIX port? */
@@ -82,7 +82,7 @@ typedef struct rend_service_port_config_s {
   tor_addr_t real_addr;
   /* The socket path to connect to, if is_unix_addr */
   char unix_addr[FLEXIBLE_ARRAY_MEMBER];
-} rend_service_port_config_t;
+};
 
 /** Try to maintain this many intro points per service by default. */
 #define NUM_INTRO_POINTS_DEFAULT 3
