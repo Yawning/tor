@@ -2406,7 +2406,8 @@ connection_or_compute_authenticate_cell_body(or_connection_t *conn,
   }
 
   /* HMAC of clientrandom and serverrandom using master key : 32 octets */
-  tor_tls_get_tlssecrets(conn->tls, ptr);
+  if (tor_tls_get_tlssecrets(conn->tls, ptr) < 0)
+    return -1;
   ptr += 32;
 
   tor_assert(ptr - out == V3_AUTH_FIXED_PART_LEN);

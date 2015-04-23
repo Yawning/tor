@@ -92,9 +92,9 @@ size_t tor_tls_get_forced_write_size(tor_tls_t *tls);
 void tor_tls_get_n_raw_bytes(tor_tls_t *tls,
                              size_t *n_read, size_t *n_written);
 
-void tor_tls_get_buffer_sizes(tor_tls_t *tls,
-                              size_t *rbuf_capacity, size_t *rbuf_bytes,
-                              size_t *wbuf_capacity, size_t *wbuf_bytes);
+int tor_tls_get_buffer_sizes(tor_tls_t *tls,
+                             size_t *rbuf_capacity, size_t *rbuf_bytes,
+                             size_t *wbuf_capacity, size_t *wbuf_bytes);
 
 MOCK_DECL(double, tls_get_write_overhead_ratio, (void));
 

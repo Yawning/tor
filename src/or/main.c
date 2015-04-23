@@ -2332,12 +2332,12 @@ dumpstats(int severity)
       if (conn->type == CONN_TYPE_OR) {
         or_connection_t *or_conn = TO_OR_CONN(conn);
         if (or_conn->tls) {
-          tor_tls_get_buffer_sizes(or_conn->tls, &rbuf_cap, &rbuf_len,
-                                   &wbuf_cap, &wbuf_len);
-          tor_log(severity, LD_GENERAL,
-              "Conn %d: %d/%d bytes used on OpenSSL read buffer; "
-              "%d/%d bytes used on write buffer.",
-              i, (int)rbuf_len, (int)rbuf_cap, (int)wbuf_len, (int)wbuf_cap);
+          if (tor_tls_get_buffer_sizes(or_conn->tls, &rbuf_cap, &rbuf_len,
+                                   &wbuf_cap, &wbuf_len))
+            tor_log(severity, LD_GENERAL,
+                "Conn %d: %d/%d bytes used on OpenSSL read buffer; "
+                "%d/%d bytes used on write buffer.",
+                i, (int)rbuf_len, (int)rbuf_cap, (int)wbuf_len, (int)wbuf_cap);
         }
       }
     }

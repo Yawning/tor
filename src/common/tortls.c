@@ -81,8 +81,10 @@
 
 /* Enable the "v2" TLS handshake.
  */
+#if OPENSSL_VERSION_NUMBER < OPENSSL_V_SERIES(1,1,0)
 #define V2_HANDSHAKE_SERVER
 #define V2_HANDSHAKE_CLIENT
+#endif
 
 /* Copied from or.h */
 #define LEGAL_NICKNAME_CHARACTERS \
@@ -1359,10 +1361,14 @@ tor_tls_context_new(crypto_pk_t *identity, unsigned int key_lifetime,
                         SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION);
   }
 #ifndef OPENSSL_NO_COMP
+#if OPENSSL_VERSION_NUMBER >= OPENSSL_V_SERIES(1,1,0)
   /* Don't actually allow compression; it uses ram and time, but the data
    * we transmit is all encrypted anyway. */
+  SSL_CTX_set_options(result->ctx, SSL_OP_NO_COMPRESSION);
+#else
   if (result->ctx->comp_methods)
     result->ctx->comp_methods = NULL;
+#endif
 #endif
 #ifdef SSL_MODE_RELEASE_BUFFERS
   SSL_CTX_set_mode(result->ctx, SSL_MODE_RELEASE_BUFFERS);
@@ -1724,7 +1730,8 @@ tor_tls_server_info_callback(const SSL *ssl, int type, int val)
 }
 #endif
 
-#if OPENSSL_VERSION_NUMBER >= OPENSSL_V_SERIES(1,0,0)
+#if OPENSSL_VERSION_NUMBER >= OPENSSL_V_SERIES(1,0,0) && \
+    OPENSSL_VERSION_NUMBER < OPENSSL_V_SERIES(1,1,0)
 /** Callback to get invoked on a server after we've read the list of ciphers
  * the client supports, but before we pick our own ciphersuite.
  *
@@ -1766,6 +1773,7 @@ tor_tls_setup_session_secret_cb(tor_tls_t *tls)
 #define tor_tls_setup_session_secret_cb(tls) STMT_NIL
 #endif
 
+#ifdef V2_HANDSHAKE_CLIENT
 /** Explain which ciphers we're missing. */
 static void
 log_unsupported_ciphers(smartlist_t *unsupported)
@@ -1789,7 +1797,9 @@ log_unsupported_ciphers(smartlist_t *unsupported)
   log_info(LD_NET, "The unsupported ciphers were: %s", joined);
   tor_free(joined);
 }
+#endif
 
+#ifdef V2_HANDSHAKE_CLIENT
 /** Replace *<b>ciphers</b> with a new list of SSL ciphersuites: specifically,
  * a list designed to mimic a common web browser.  We might not be able to do
  * that if OpenSSL doesn't support all the ciphers we want.  Some of the
@@ -1803,7 +1813,6 @@ log_unsupported_ciphers(smartlist_t *unsupported)
 static void
 rectify_client_ciphers(STACK_OF(SSL_CIPHER) **ciphers)
 {
-#ifdef V2_HANDSHAKE_CLIENT
   if (PREDICT_UNLIKELY(!CLIENT_CIPHER_STACK)) {
     /* We need to set CLIENT_CIPHER_STACK to an array of the ciphers
      * we want to use/advertise. */
@@ -1879,11 +1888,8 @@ rectify_client_ciphers(STACK_OF(SSL_CIPHER) **ciphers)
   sk_SSL_CIPHER_free(*ciphers);
   *ciphers = sk_SSL_CIPHER_dup(CLIENT_CIPHER_STACK);
   tor_assert(*ciphers);
-
-#else
-    (void)ciphers;
-#endif
 }
+#endif
 
 /** Create a new TLS object from a file descriptor, and a flag to
  * determine whether it is functioning as a server.
@@ -1924,8 +1930,10 @@ tor_tls_new(int sock, int isServer)
     tor_free(result);
     goto err;
   }
+#ifdef V2_HANDSHAKE_CLIENT
   if (!isServer)
     rectify_client_ciphers(&result->ssl->cipher_list);
+#endif
   result->socket = sock;
   bio = BIO_new_socket(sock, BIO_NOCLOSE);
   if (! bio) {
@@ -2018,9 +2026,11 @@ tor_tls_unblock_renegotiation(tor_tls_t *tls)
 {
   /* Yes, we know what we are doing here.  No, we do not treat a renegotiation
    * as authenticating any earlier-received data. */
+#if OPENSSL_VERSION_NUMBER < OPENSSL_V_SERIES(1,1,0)
   if (use_unsafe_renegotiation_flag) {
     tls->ssl->s3->flags |= SSL3_FLAGS_ALLOW_UNSAFE_LEGACY_RENEGOTIATION;
   }
+#endif
   if (use_unsafe_renegotiation_op) {
     SSL_set_options(tls->ssl,
                     SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION);
@@ -2034,17 +2044,27 @@ tor_tls_unblock_renegotiation(tor_tls_t *tls)
 void
 tor_tls_block_renegotiation(tor_tls_t *tls)
 {
-  tls->ssl->s3->flags &= ~SSL3_FLAGS_ALLOW_UNSAFE_LEGACY_RENEGOTIATION;
+#if OPENSSL_VERSION_NUMBER < OPENSSL_V_SERIES(1,1,0)
+  if (use_unsafe_renegotiation_flag) {
+    tls->ssl->s3->flags &= ~SSL3_FLAGS_ALLOW_UNSAFE_LEGACY_RENEGOTIATION;
+  }
+#endif
+  if (use_unsafe_renegotiation_op) {
+    SSL_clear_options(tls->ssl,
+                      SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION);
+  }
 }
 
 /** Assert that the flags that allow legacy renegotiation are still set */
 void
 tor_tls_assert_renegotiation_unblocked(tor_tls_t *tls)
 {
+#if OPENSSL_VERSION_NUMBER < OPENSSL_V_SERIES(1,1,0)
   if (use_unsafe_renegotiation_flag) {
     tor_assert(0 != (tls->ssl->s3->flags &
                      SSL3_FLAGS_ALLOW_UNSAFE_LEGACY_RENEGOTIATION));
   }
+#endif
   if (use_unsafe_renegotiation_op) {
     long options = SSL_get_options(tls->ssl);
     tor_assert(0 != (options & SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION));
@@ -2175,11 +2195,16 @@ tor_tls_handshake(tor_tls_t *tls)
 {
   int r;
   int oldstate;
+  int newstate;
   tor_assert(tls);
   tor_assert(tls->ssl);
   tor_assert(tls->state == TOR_TLS_ST_HANDSHAKE);
   check_no_tls_errors();
+#if OPENSSL_VERSION_NUMBER >= OPENSSL_V_SERIES(1,1,0)
+  oldstate = SSL_state(tls->ssl);
+#else
   oldstate = tls->ssl->state;
+#endif
   if (tls->isServer) {
     log_debug(LD_HANDSHAKE, "About to call SSL_accept on %p (%s)", tls,
               SSL_state_string_long(tls->ssl));
@@ -2189,7 +2214,12 @@ tor_tls_handshake(tor_tls_t *tls)
               SSL_state_string_long(tls->ssl));
     r = SSL_connect(tls->ssl);
   }
-  if (oldstate != tls->ssl->state)
+#if OPENSSL_VERSION_NUMBER >= OPENSSL_V_SERIES(1,1,0)
+  newstate = SSL_state(tls->ssl);
+#else
+  newstate = tls->ssl->state;
+#endif
+  if (oldstate != newstate)
     log_debug(LD_HANDSHAKE, "After call, %p was in state %s",
               tls, SSL_state_string_long(tls->ssl));
   /* We need to call this here and not earlier, since OpenSSL has a penchant
@@ -2225,7 +2255,12 @@ tor_tls_finish_handshake(tor_tls_t *tls)
     SSL_set_info_callback(tls->ssl, NULL);
     SSL_set_verify(tls->ssl, SSL_VERIFY_PEER, always_accept_verify_cb);
     /* There doesn't seem to be a clear OpenSSL API to clear mode flags. */
+#if OPENSSL_VERSION_NUMBER >= OPENSSL_V_SERIES(1,1,0)
+    long mode = SSL_get_mode(tls->ssl);
+    SSL_set_mode(tls->ssl, mode & ~SSL_MODE_NO_AUTO_CHAIN);
+#else
     tls->ssl->mode &= ~SSL_MODE_NO_AUTO_CHAIN;
+#endif
 #ifdef V2_HANDSHAKE_SERVER
     if (tor_tls_client_is_using_v2_ciphers(tls->ssl)) {
       /* This check is redundant, but back when we did it in the callback,
@@ -2823,6 +2858,13 @@ tor_tls_server_got_renegotiate(tor_tls_t *tls)
 int
 tor_tls_get_tlssecrets(tor_tls_t *tls, uint8_t *secrets_out)
 {
+#if OPENSSL_VERSION_NUMBER >= OPENSSL_V_SERIES(1,1,0)
+  /* As far as I can tell there is no way to get this in OpenSSL 1.1.0. */
+  (void)tls;
+  (void)secrets_out;
+
+  return -1;
+#else
 #define TLSSECRET_MAGIC "Tor V3 handshake TLS cross-certification"
   char buf[128];
   size_t len;
@@ -2844,18 +2886,29 @@ tor_tls_get_tlssecrets(tor_tls_t *tls, uint8_t *secrets_out)
                      buf, len);
   memwipe(buf, 0, sizeof(buf));
   return 0;
+#endif
 }
 
 /** Examine the amount of memory used and available for buffers in <b>tls</b>.
  * Set *<b>rbuf_capacity</b> to the amount of storage allocated for the read
  * buffer and *<b>rbuf_bytes</b> to the amount actually used.
  * Set *<b>wbuf_capacity</b> to the amount of storage allocated for the write
- * buffer and *<b>wbuf_bytes</b> to the amount actually used. */
-void
+ * buffer and *<b>wbuf_bytes</b> to the amount actually used. Return 0 on
+ * success, -1 on failure. */
+int
 tor_tls_get_buffer_sizes(tor_tls_t *tls,
                          size_t *rbuf_capacity, size_t *rbuf_bytes,
                          size_t *wbuf_capacity, size_t *wbuf_bytes)
 {
+#if OPENSSL_VERSION_NUMBER >= OPENSSL_V_SERIES(1,1,0)
+  (void)tls;
+  (void)rbuf_capacity;
+  (void)rbuf_bytes;
+  (void)wbuf_capacity;
+  (void)wbuf_bytes;
+
+  return -1;
+#else
   if (tls->ssl->s3->rbuf.buf)
     *rbuf_capacity = tls->ssl->s3->rbuf.len;
   else
@@ -2866,6 +2919,9 @@ tor_tls_get_buffer_sizes(tor_tls_t *tls,
     *wbuf_capacity = 0;
   *rbuf_bytes = tls->ssl->s3->rbuf.left;
   *wbuf_bytes = tls->ssl->s3->wbuf.left;
+
+  return 0;
+#endif
 }
 
 #ifdef USE_BUFFEREVENTS
