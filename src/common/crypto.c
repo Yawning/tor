@@ -1419,7 +1419,7 @@ crypto_pk_base64_encode(const crypto_pk_t *pk, char **priv_out)
 
   size_t priv_len = base64_encode_size(der_len, 0) + 1;
   char *priv = tor_malloc_zero(priv_len);
-  if (base64_encode(priv, der_len * 2, (char *)der, der_len, 0) >= 0) {
+  if (base64_encode(priv, priv_len, (char *)der, der_len, 0) >= 0) {
     *priv_out = priv;
     ret = 0;
   } else {
