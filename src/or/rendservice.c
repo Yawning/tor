@@ -3119,8 +3119,7 @@ directory_post_to_hs_dir(rend_service_descriptor_t *renddesc,
     /** If any HSDirs are specified, they should be used instead of
      *  the responsible directories */
     if (hs_dirs && smartlist_len(hs_dirs) > 0) {
-      smartlist_free(responsible_dirs);
-      responsible_dirs = hs_dirs;
+      smartlist_add_all(responsible_dirs, hs_dirs);
     } else {
       /* Determine responsible dirs. */
       if (hid_serv_get_responsible_directories(responsible_dirs,
@@ -3130,9 +3129,7 @@ directory_post_to_hs_dir(rend_service_descriptor_t *renddesc,
         control_event_hs_descriptor_upload(service_id,
                                            "UNKNOWN",
                                            "UNKNOWN");
-        smartlist_free(responsible_dirs);
-        smartlist_free(successful_uploads);
-        return;
+        goto done;
       }
     }
     for (j = 0; j < smartlist_len(responsible_dirs); j++) {
@@ -3203,9 +3200,8 @@ directory_post_to_hs_dir(rend_service_descriptor_t *renddesc,
       }
     });
   }
-  /* Free responsible_dirs if it was created in this function */
-  if (!hs_dirs)
-    smartlist_free(responsible_dirs);
+ done:
+  smartlist_free(responsible_dirs);
   smartlist_free(successful_uploads);
 }
 
