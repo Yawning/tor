@@ -3099,10 +3099,12 @@ find_intro_point(origin_circuit_t *circ)
   return NULL;
 }
 
-/** Determine the responsible hidden service directories for the
- * rend_encoded_v2_service_descriptor_t's in <b>descs</b> and upload them;
- * <b>service_id</b> and <b>seconds_valid</b> are only passed for logging
- * purposes. */
+/** Upload the rend_encoded_v2_service_descriptor_t's in <b>descs</b>
+ * associated with the rend_service_descriptor_t <b>renddesc</b> to
+ * the responsible hidden service directories OR the hidden service
+ * directories specified by <b>hs_dirs</b>; <b>service_id</b> and
+ * <b>seconds_valid</b> are only passed for logging purposes.
+ */
 void
 directory_post_to_hs_dir(rend_service_descriptor_t *renddesc,
                          smartlist_t *descs, smartlist_t *hs_dirs,
