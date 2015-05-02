@@ -3457,7 +3457,7 @@ handle_control_hspost(control_connection_t *conn,
                                    server);
           goto done;
         }
-        if(!node->rs->is_hs_dir) {
+        if (!node->rs->is_hs_dir) {
           connection_printf_to_buf(conn, "552 Server \"%s\" is not a HSDir"
                                          "\r\n", server);
           goto done;
@@ -3510,7 +3510,7 @@ handle_control_hspost(control_connection_t *conn,
 
   tor_free(intro_content);
   rend_encoded_v2_service_descriptor_free(desc);
-done:
+ done:
   tor_free(argline);
   smartlist_free(hs_dirs); /* Contents belong to the rend service code. */
   SMARTLIST_FOREACH(args, char *, arg, tor_free(arg));
