@@ -79,6 +79,8 @@
 static tor_mutex_t **openssl_mutexes_ = NULL;
 /** How many mutexes have we allocated for use by OpenSSL? */
 static int n_openssl_mutexes_ = 0;
+/** Is it safe to use OpenSSL's EVP interface for digests? */
+static int should_use_EVP_MD_ = 0;
 
 /** A public key, or a public/private key-pair. */
 struct crypto_pk_t
@@ -258,6 +260,15 @@ crypto_force_rand_ssleay(void)
   return 0;
 }
 
+/** Check to see if OpenSSL's EVP_MD interface is usable, and set the global
+ * flag variable as appropriate. */
+static void
+evaluate_evp_for_md(void)
+{
+  /* As far as I am aware, this is safe to use, always. */
+  should_use_EVP_MD_ = 1;
+}
+
 /** Set up the siphash key if we haven't already done so. */
 int
 crypto_init_siphash_key(void)
@@ -371,6 +382,7 @@ crypto_global_init(int useAccel, const char *accelName, const char *accelDir)
       log_engine("RAND", ENGINE_get_default_RAND());
       log_engine("RAND (which we will not use)", ENGINE_get_default_RAND());
       log_engine("SHA1", ENGINE_get_digest_engine(NID_sha1));
+      log_engine("SHA256", ENGINE_get_digest_engine(NID_sha256));
       log_engine("3DES-CBC", ENGINE_get_cipher_engine(NID_des_ede3_cbc));
       log_engine("AES-128-ECB", ENGINE_get_cipher_engine(NID_aes_128_ecb));
       log_engine("AES-128-CBC", ENGINE_get_cipher_engine(NID_aes_128_cbc));
@@ -395,6 +407,7 @@ crypto_global_init(int useAccel, const char *accelName, const char *accelDir)
         return -1;
     }
 
+    evaluate_evp_for_md();
     evaluate_evp_for_aes(-1);
     evaluate_ctr_for_aes();
   }
@@ -1662,9 +1675,11 @@ struct crypto_digest_t {
   union {
     SHA_CTX sha1; /**< state for SHA1 */
     SHA256_CTX sha2; /**< state for SHA256 */
+    EVP_MD_CTX *ctx; /**< state for EVP_MD */
   } d; /**< State for the digest we're using.  Only one member of the
         * union is usable, depending on the value of <b>algorithm</b>. */
   digest_algorithm_bitfield_t algorithm : 8; /**< Which algorithm is in use? */
+  int use_EVP : 1; /**< Is EVP being used? */
 };
 
 /** Allocate and return a new digest object to compute SHA1 digests.
@@ -1674,8 +1689,13 @@ crypto_digest_new(void)
 {
   crypto_digest_t *r;
   r = tor_malloc(sizeof(crypto_digest_t));
-  SHA1_Init(&r->d.sha1);
   r->algorithm = DIGEST_SHA1;
+  if ((r->use_EVP = should_use_EVP_MD_) != 0) {
+    r->d.ctx = EVP_MD_CTX_create();
+    EVP_DigestInit_ex(r->d.ctx, EVP_sha1(), NULL);
+  } else {
+    SHA1_Init(&r->d.sha1);
+  }
   return r;
 }
 
@@ -1687,8 +1707,13 @@ crypto_digest256_new(digest_algorithm_t algorithm)
   crypto_digest_t *r;
   tor_assert(algorithm == DIGEST_SHA256);
   r = tor_malloc(sizeof(crypto_digest_t));
-  SHA256_Init(&r->d.sha2);
   r->algorithm = algorithm;
+  if ((r->use_EVP = should_use_EVP_MD_) != 0) {
+    r->d.ctx = EVP_MD_CTX_create();
+    EVP_DigestInit_ex(r->d.ctx, EVP_sha256(), NULL);
+  } else {
+    SHA256_Init(&r->d.sha2);
+  }
   return r;
 }
 
@@ -1699,6 +1724,8 @@ crypto_digest_free(crypto_digest_t *digest)
 {
   if (!digest)
     return;
+  if (digest->use_EVP)
+    EVP_MD_CTX_destroy(digest->d.ctx);
   memwipe(digest, 0, sizeof(crypto_digest_t));
   tor_free(digest);
 }
@@ -1711,21 +1738,37 @@ crypto_digest_add_bytes(crypto_digest_t *digest, const char *data,
 {
   tor_assert(digest);
   tor_assert(data);
-  /* Using the SHA*_*() calls directly means we don't support doing
-   * SHA in hardware. But so far the delay of getting the question
-   * to the hardware, and hearing the answer, is likely higher than
-   * just doing it ourselves. Hashes are fast.
-   */
-  switch (digest->algorithm) {
-    case DIGEST_SHA1:
-      SHA1_Update(&digest->d.sha1, (void*)data, len);
-      break;
-    case DIGEST_SHA256:
-      SHA256_Update(&digest->d.sha2, (void*)data, len);
-      break;
-    default:
+  if (digest->use_EVP) {
+    /* Historically, bypassing the hardware acceleration was the ok
+     * thing to do, but the speed gains on certain modern accelerators
+     * makes this worth revisiting again.
+     *
+     * If the user is using some garbage like cryptdev, this is going
+     * to be a net performance hit in most cases, but that's their
+     * problem, and the cryptdev documentation warns against this.
+     */
+    if (!EVP_DigestUpdate(digest->d.ctx, data, len)) {
       tor_fragile_assert();
-      break;
+    }
+  } else {
+    /* Using the SHA*_*() calls directly means we don't support doing
+     * SHA in hardware.  This does not apply to all hardware, just
+     * hardware that OpenSSL chose to use the EVP interface for.
+     *
+     * In particular, ARMv8's hardware SHA1/256 acceleration is still
+     * used by the SHA*_* assembly code.
+     */
+    switch (digest->algorithm) {
+      case DIGEST_SHA1:
+        SHA1_Update(&digest->d.sha1, (void*)data, len);
+        break;
+      case DIGEST_SHA256:
+        SHA256_Update(&digest->d.sha2, (void*)data, len);
+        break;
+      default:
+        tor_fragile_assert();
+        break;
+    }
   }
 }
 
@@ -1738,27 +1781,44 @@ crypto_digest_get_digest(crypto_digest_t *digest,
                          char *out, size_t out_len)
 {
   unsigned char r[DIGEST256_LEN];
-  crypto_digest_t tmpenv;
   tor_assert(digest);
   tor_assert(out);
-  /* memcpy into a temporary ctx, since SHA*_Final clears the context */
-  memcpy(&tmpenv, digest, sizeof(crypto_digest_t));
-  switch (digest->algorithm) {
-    case DIGEST_SHA1:
-      tor_assert(out_len <= DIGEST_LEN);
-      SHA1_Final(r, &tmpenv.d.sha1);
-      break;
-    case DIGEST_SHA256:
-      tor_assert(out_len <= DIGEST256_LEN);
-      SHA256_Final(r, &tmpenv.d.sha2);
-      break;
-    default:
-      log_warn(LD_BUG, "Called with unknown algorithm %d", digest->algorithm);
-      /* If fragile_assert is not enabled, then we should at least not
-       * leak anything. */
+  if (digest->use_EVP) {
+    unsigned int written = 0;
+    int ok = 1;
+    tor_assert(EVP_MD_CTX_size(digest->d.ctx) <= (int)sizeof(r));
+    EVP_MD_CTX *tmpctx = EVP_MD_CTX_create();
+    ok &= EVP_MD_CTX_copy_ex(tmpctx, digest->d.ctx);
+    ok &= EVP_DigestFinal_ex(tmpctx, r, &written);
+    EVP_MD_CTX_destroy(tmpctx);
+    if (!ok) {
+      log_warn(LD_BUG, "Failed to copy/finalize digest %d (EVP)",
+               digest->algorithm);
       memwipe(r, 0xff, sizeof(r));
       tor_fragile_assert();
-      break;
+    }
+    tor_assert(out_len <= written);
+  } else {
+    crypto_digest_t tmpenv;
+    /* memcpy into a temporary ctx, since SHA*_Final clears the context */
+    memcpy(&tmpenv, digest, sizeof(crypto_digest_t));
+    switch (digest->algorithm) {
+      case DIGEST_SHA1:
+        tor_assert(out_len <= DIGEST_LEN);
+        SHA1_Final(r, &tmpenv.d.sha1);
+        break;
+      case DIGEST_SHA256:
+        tor_assert(out_len <= DIGEST256_LEN);
+        SHA256_Final(r, &tmpenv.d.sha2);
+        break;
+      default:
+        log_warn(LD_BUG, "Called with unknown algorithm %d", digest->algorithm);
+        /* If fragile_assert is not enabled, then we should at least not
+         * leak anything. */
+        memwipe(r, 0xff, sizeof(r));
+        tor_fragile_assert();
+        break;
+    }
   }
   memcpy(out, r, out_len);
   memwipe(r, 0, sizeof(r));
@@ -1774,6 +1834,12 @@ crypto_digest_dup(const crypto_digest_t *digest)
   tor_assert(digest);
   r = tor_malloc(sizeof(crypto_digest_t));
   memcpy(r,digest,sizeof(crypto_digest_t));
+  if (r->use_EVP) {
+    int ret;
+    r->d.ctx = EVP_MD_CTX_create();
+    ret = EVP_MD_CTX_copy_ex(r->d.ctx, digest->d.ctx);
+    tor_assert(ret);
+  }
   return r;
 }
 
@@ -1786,7 +1852,20 @@ crypto_digest_assign(crypto_digest_t *into,
 {
   tor_assert(into);
   tor_assert(from);
-  memcpy(into,from,sizeof(crypto_digest_t));
+
+  tor_assert(into->use_EVP == from->use_EVP);
+
+  if (into->use_EVP) {
+    EVP_MD_CTX *into_ctx = into->d.ctx;
+    memcpy(into,from,sizeof(crypto_digest_t));
+    into->d.ctx = into_ctx;
+    if (!EVP_MD_CTX_copy_ex(into->d.ctx, from->d.ctx)) {
+      log_warn(LD_BUG, "Failed to copy digest %d (EVP)", from->algorithm);
+      tor_fragile_assert();
+    }
+  } else {
+    memcpy(into,from,sizeof(crypto_digest_t));
+  }
 }
 
 /** Given a list of strings in <b>lst</b>, set the <b>len_out</b>-byte digest
