@@ -3566,9 +3566,11 @@ handle_control_add_onion(control_connection_t *conn,
   smartlist_t *port_cfgs = smartlist_new();
   int discard_pk = 0;
   int detach = 0;
+  int max_streams = 0;
   for (size_t i = 1; i < arg_len; i++) {
     static const char *port_prefix = "Port=";
     static const char *flags_prefix = "Flags=";
+    static const char *max_s_prefix = "MaxStreams=";
 
     const char *arg = smartlist_get(args, i);
     if (!strcasecmpstart(arg, port_prefix)) {
@@ -3582,6 +3584,15 @@ handle_control_add_onion(control_connection_t *conn,
         goto out;
       }
       smartlist_add(port_cfgs, cfg);
+    } else if (!strcasecmpstart(arg, max_s_prefix)) {
+      /* "MaxStreams=[0..65535]". */
+      const char *max_s_str = arg + strlen(max_s_prefix);
+      int ok = 0;
+      max_streams = (int)tor_parse_long(max_s_str, 10, 0, 65535, &ok, NULL);
+      if (!ok) {
+        connection_printf_to_buf(conn, "512 Invalid MaxStreams\r\n");
+        goto out;
+      }
     } else if (!strcasecmpstart(arg, flags_prefix)) {
       /* "Flags=Flag[,Flag]", where Flag can be:
        *   * 'DiscardPK' - If tor generates the keypair, do not include it in
@@ -3652,7 +3663,8 @@ handle_control_add_onion(control_connection_t *conn,
    * regardless of success/failure.
    */
   char *service_id = NULL;
-  int ret = rend_service_add_ephemeral(pk, port_cfgs, &service_id);
+  int ret = rend_service_add_ephemeral(pk, port_cfgs, max_streams,
+                                       &service_id);
   port_cfgs = NULL; /* port_cfgs is now owned by the rendservice code. */
   switch (ret) {
   case RSAE_OKAY:
