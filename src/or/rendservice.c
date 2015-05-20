@@ -3839,13 +3839,13 @@ rend_service_set_connection_addr_port(edge_connection_t *conn,
 #define MAX_STREAM_WARN_INTERVAL 600
     static struct ratelim_t stream_ratelim =
         RATELIM_INIT(MAX_STREAM_WARN_INTERVAL);
-    if (circ->rend_data->n_streams >= service->max_streams_per_circuit) {
+    if (circ->rend_data->nr_streams >= service->max_streams_per_circuit) {
       log_fn_ratelim(&stream_ratelim, LOG_WARN, LD_REND,
                      "Maximum streams per circuit limit reached on rendezvous "
                      "circuit %u; ignoring open stream request.  Circuit has "
                      "%d out of %d streams.",
                      (unsigned)circ->base_.n_circ_id,
-                     circ->rend_data->n_streams,
+                     circ->rend_data->nr_streams,
                      service->max_streams_per_circuit);
       return -1;
     }

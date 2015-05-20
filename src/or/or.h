@@ -820,7 +820,7 @@ typedef struct rend_data_t {
   smartlist_t *hsdirs_fp;
 
   /** Number of streams associated with this rendezvous circuit. */
-  int n_streams;
+  int nr_streams;
 } rend_data_t;
 
 /** Time interval for tracking replays of DH public keys received in

@@ -1189,10 +1189,10 @@ circuit_detach_stream(circuit_t *circ, edge_connection_t *conn)
 
   if (CIRCUIT_IS_ORIGIN(circ)) {
     origin_circuit_t *origin_circ = TO_ORIGIN_CIRCUIT(circ);
-    int ok = 0;
+    int removed = 0;
     if (conn == origin_circ->p_streams) {
       origin_circ->p_streams = conn->next_stream;
-      ok = 1;
+      removed = 1;
     } else {
       for (prevconn = origin_circ->p_streams;
            prevconn && prevconn->next_stream && prevconn->next_stream != conn;
@@ -1200,13 +1200,16 @@ circuit_detach_stream(circuit_t *circ, edge_connection_t *conn)
         ;
       if (prevconn && prevconn->next_stream) {
         prevconn->next_stream = conn->next_stream;
-        ok = 1;
+        removed = 1;
       }
     }
-    if (ok) {
+    if (removed) {
+      /* If the stream was removed, and it was a rend stream, decrement the
+       * number of streams on the circuit associated with the rend service.
+       */
       if (circ->purpose == CIRCUIT_PURPOSE_S_REND_JOINED) {
         tor_assert(origin_circ->rend_data);
-        origin_circ->rend_data->n_streams--;
+        origin_circ->rend_data->nr_streams--;
       }
       return;
     }
