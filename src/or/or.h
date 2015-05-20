@@ -804,6 +804,9 @@ typedef struct rend_data_t {
 
   /** Rendezvous cookie used by both, client and service. */
   char rend_cookie[REND_COOKIE_LEN];
+
+  /** Number of streams associated with this rendezvous circuit. */
+  int nr_streams;
 } rend_data_t;
 
 /** Time interval for tracking replays of DH public keys received in
