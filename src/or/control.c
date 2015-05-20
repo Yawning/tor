@@ -3567,6 +3567,7 @@ handle_control_add_onion(control_connection_t *conn,
   int discard_pk = 0;
   int detach = 0;
   int max_streams = 0;
+  int max_streams_close_circuit = 0;
   for (size_t i = 1; i < arg_len; i++) {
     static const char *port_prefix = "Port=";
     static const char *flags_prefix = "Flags=";
@@ -3599,9 +3600,12 @@ handle_control_add_onion(control_connection_t *conn,
        *                   the response.
        *   * 'Detach' - Do not tie this onion service to any particular control
        *                connection.
+       *   * 'MaxStreamsCloseCircuit' - Close the circuit if MaxStreams is
+       *                                exceeded.
        */
       static const char *discard_flag = "DiscardPK";
       static const char *detach_flag = "Detach";
+      static const char *max_s_close_flag = "MaxStreamsCloseCircuit";
 
       smartlist_t *flags = smartlist_new();
       int bad = 0;
@@ -3618,6 +3622,8 @@ handle_control_add_onion(control_connection_t *conn,
           discard_pk = 1;
         } else if (!strcasecmp(flag, detach_flag)) {
           detach = 1;
+        } else if (!strcasecmp(flag, max_s_close_flag)) {
+          max_streams_close_circuit = 1;
         } else {
           connection_printf_to_buf(conn,
                                    "512 Invalid 'Flags' argument: %s\r\n",
@@ -3664,6 +3670,7 @@ handle_control_add_onion(control_connection_t *conn,
    */
   char *service_id = NULL;
   int ret = rend_service_add_ephemeral(pk, port_cfgs, max_streams,
+                                       max_streams_close_circuit,
                                        &service_id);
   port_cfgs = NULL; /* port_cfgs is now owned by the rendservice code. */
   switch (ret) {
