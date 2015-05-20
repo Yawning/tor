@@ -3862,9 +3862,11 @@ rend_service_set_connection_addr_port(edge_connection_t *conn,
     if (circ->rend_data->nr_streams >= service->max_streams_per_circuit) {
       log_fn_ratelim(&stream_ratelim, LOG_WARN, LD_REND,
                      "Maximum streams per circuit limit reached on rendezvous "
-                     "circuit %u; ignoring open stream request.  Circuit has "
-                     "%d out of %d streams.",
+                     "circuit %u; %s.  Circuit has %d out of %d streams.",
                      (unsigned)circ->base_.n_circ_id,
+                     service->max_streams_close_circuit ?
+                       "closing circuit" :
+                       "ignoring open stream request",
                      circ->rend_data->nr_streams,
                      service->max_streams_per_circuit);
       return service->max_streams_close_circuit ? -2 : -1;
