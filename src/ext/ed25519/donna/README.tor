@@ -15,10 +15,16 @@ as of 8757bd4cd209cb032853ece0ce413f122eef212c.
      * The various `ed25519_` typedefs.
 
  * There's an implementation of multiplicative key blinding so we can use
-   it for next-gen hidden srevice descriptors.
+   it for next-gen hidden service descriptors.
 
  * There's an implementation of 'convert a curve25519 key to an
    ed25519 key' so we can do cross-certification with curve25519 keys.
 
  * The secret (aka private) key is now stored/used in expanded form.
+
+ * The code in test-internals.c is made callable at runtime, instead of
+   standalone to use for runtime validation of the implementation.
+
+ * OSX pollutes the global namespace with an `ALIGN` macro, which is undef-ed
+   right before the donna `ALIGN` macro is defined.
 
