@@ -1640,7 +1640,7 @@ static void
 test_crypto_ed25519_fuzz_donna(void *arg)
 {
   const int iters = 1024;
-  uint8_t msg[iters];
+  uint8_t msg[1024];
   int i;
   (void)arg;
 
@@ -1658,6 +1658,7 @@ test_crypto_ed25519_fuzz_donna(void *arg)
     ed25519_signature_t sig, sig_blind;
     int bit = 0;
 
+    tor_assert((size_t)i <= sizeof(msg));
     crypto_rand((char*) blinding, sizeof(blinding));
 
     /* Impl. A:
