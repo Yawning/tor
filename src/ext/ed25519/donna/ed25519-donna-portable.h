@@ -144,6 +144,24 @@ static inline void U64TO8_LE(unsigned char *p, const uint64_t v) {
 	#endif
 #endif
 
+/* Tor: GCC's Stack Protector freaks out and produces variable length
+ * buffer warnings when alignment is requested that is greater than
+ * STACK_BOUNDARY (x86 has special code to deal with this for SSE2).
+ *
+ * Since the only reason things are 16 byte aligned in the first place
+ * is for SSE2, just undef the macro on ARM targets.
+ *
+ * See: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=59674
+ *
+ * Note: If NEON assembly ever gets added this will need to be revisited
+ * if loads/stores assume 16 byte alignment.  The penalty for an unaligned
+ * load/store in NEON isn't too bad, so just removing the flag would be
+ * the easy thing to do.
+ */
+#if defined(__arm__)
+	#undef ALIGN
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 
