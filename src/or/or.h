@@ -1155,6 +1155,8 @@ typedef struct entry_port_cfg_t {
   /** When both no-auth and user/pass are advertised by a SOCKS client, select
    * no-auth. */
   unsigned int socks_prefer_no_auth : 1;
+  /** When ISO_SOCKSAUTH is in use, Keep-Alive circuits indefinitely. */
+  unsigned int socks_iso_keep_alive : 1;
 
   /* Client port types only: */
   unsigned int ipv4_traffic : 1;
