@@ -59,6 +59,13 @@ const char *build_state_get_exit_nickname(cpath_build_state_t *state);
 const node_t *choose_good_entry_server(uint8_t purpose,
                                        cpath_build_state_t *state);
 
+int origin_pending_add(origin_circuit_t *circ,
+                       const struct created_cell_t *onionskin,
+                       crypt_path_t *hop);
+origin_circuit_t *origin_next_task(struct created_cell_t **onionskin_out,
+                                   crypt_path_t **hop_out);
+void origin_pending_remove(origin_circuit_t *circ);
+
 #ifdef CIRCUITBUILD_PRIVATE
 STATIC circid_t get_unique_circ_id_by_chan(channel_t *chan);
 #if defined(ENABLE_TOR2WEB_MODE) || defined(TOR_UNIT_TESTS)

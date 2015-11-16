@@ -296,7 +296,7 @@ onion_pending_remove(or_circuit_t *circ)
   if (victim)
     onion_queue_entry_remove(victim);
 
-  cpuworker_cancel_circ_handshake(circ);
+  cpuworker_cancel_circ_handshake(TO_CIRCUIT(circ));
 }
 
 /** Remove a queue entry <b>victim</b> from the queue, unlinking it from

@@ -16,6 +16,7 @@
 #include "circuitlist.h"
 #include "connection_or.h"
 #include "config.h"
+#include "control.h"
 #include "cpuworker.h"
 #include "main.h"
 #include "onion.h"
@@ -103,14 +104,13 @@ cpu_init(void)
 
 /** Magic numbers to make sure our cpuworker_requests don't grow any
  * mis-framing bugs. */
-#define CPUWORKER_REQUEST_MAGIC 0xda4afeed
-#define CPUWORKER_REPLY_MAGIC 0x5eedf00d
+#define CPUWORKER_ONIONSKIN_SERVER_REQUEST_MAGIC 0xda4afeed
+#define CPUWORKER_ONIONSKIN_SERVER_REPLY_MAGIC   0x5eedf00d
+#define CPUWORKER_ONIONSKIN_CLIENT_REQUEST_MAGIC 0xdeadcafe
+#define CPUWORKER_ONIONSKIN_CLIENT_REPLY_MAGIC   0xb33fd00d
 
-/** A request sent to a cpuworker. */
-typedef struct cpuworker_request_t {
-  /** Magic number; must be CPUWORKER_REQUEST_MAGIC. */
-  uint32_t magic;
-
+/** A onionskin server handshake request sent to a cpuworker. */
+typedef struct cpuworker_onionskin_server_request_t {
   /** Flag: Are we timing this request? */
   unsigned timed : 1;
   /** If we're timing this request, when was it sent to the cpuworker? */
@@ -120,13 +120,10 @@ typedef struct cpuworker_request_t {
   create_cell_t create_cell;
 
   /* Turn the above into a tagged union if needed. */
-} cpuworker_request_t;
+} cpuworker_onionskin_server_request_t;
 
-/** A reply sent by a cpuworker. */
-typedef struct cpuworker_reply_t {
-  /** Magic number; must be CPUWORKER_REPLY_MAGIC. */
-  uint32_t magic;
-
+/** A onionskin server handshake reply sent by a cpuworker. */
+typedef struct cpuworker_onionskin_server_reply_t {
   /** True iff we got a successful request. */
   uint8_t success;
 
@@ -151,13 +148,42 @@ typedef struct cpuworker_reply_t {
   uint8_t keys[CPATH_KEY_MATERIAL_LEN];
   /** Input to use for authenticating introduce1 cells. */
   uint8_t rend_auth_material[DIGEST_LEN];
-} cpuworker_reply_t;
+} cpuworker_onionskin_server_reply_t;
+
+/** A onionskin client handshake request sent to a cpuworker. */
+typedef struct cpuworker_onionskin_client_request_t {
+  /** A created cell for the cpuworker to process. */
+  created_cell_t created_cell;
+
+  /* Turn the above into a tagged union if needed. */
+} cpuworker_onionskin_client_request_t;
+
+/** A onionskin client handshake request sent to a cpuworker. */
+typedef struct cpuworker_onionskin_client_reply_t {
+  /** True iff we got a successful request. */
+  uint8_t success;
+
+  /** The keys to use on this circuit. */
+  uint8_t keys[CPATH_KEY_MATERIAL_LEN];
+  /** Input to use for authenticating introduce1 cells. */
+  uint8_t rend_auth_material[DIGEST_LEN];
+} cpuworker_onionskin_client_reply_t;
 
 typedef struct cpuworker_job_u {
-  or_circuit_t *circ;
+  /** Magic number; must be CPUWORKER_[type]_[REQUEST,RESPONSE]_MAGIC. */
+  uint32_t magic;
+  /** The circuit with which this job is associated with. */
+  circuit_t *circ;
+
   union {
-    cpuworker_request_t request;
-    cpuworker_reply_t reply;
+    union {
+      cpuworker_onionskin_server_request_t server_handshake;
+      cpuworker_onionskin_client_request_t client_handshake;
+    } request;
+    union {
+      cpuworker_onionskin_server_reply_t server_handshake;
+      cpuworker_onionskin_client_reply_t client_handshake;
+    } reply;
   } u;
 } cpuworker_job_t;
 
@@ -293,21 +319,21 @@ cpuworker_log_onionskin_overhead(int severity, int onionskin_type,
          onionskin_type_name, (unsigned)overhead, relative_overhead*100);
 }
 
-/** Handle a reply from the worker threads. */
+/** Handle a server onionskin reply from the worker threads. */
 static void
-cpuworker_onion_handshake_replyfn(void *work_)
+cpuworker_onion_server_handshake_replyfn(void *work_)
 {
   cpuworker_job_t *job = work_;
-  cpuworker_reply_t rpl;
+  cpuworker_onionskin_server_reply_t rpl;
   or_circuit_t *circ = NULL;
 
   tor_assert(total_pending_tasks > 0);
   --total_pending_tasks;
 
   /* Could avoid this, but doesn't matter. */
-  memcpy(&rpl, &job->u.reply, sizeof(rpl));
+  memcpy(&rpl, &job->u.reply.server_handshake, sizeof(rpl));
 
-  tor_assert(rpl.magic == CPUWORKER_REPLY_MAGIC);
+  tor_assert(job->magic == CPUWORKER_ONIONSKIN_SERVER_REPLY_MAGIC);
 
   if (rpl.timed && rpl.success &&
       rpl.handshake_type <= MAX_ONION_HANDSHAKE_TYPE) {
@@ -333,7 +359,7 @@ cpuworker_onion_handshake_replyfn(void *work_)
     }
   }
 
-  circ = job->circ;
+  circ = TO_OR_CIRCUIT(job->circ);
 
   log_debug(LD_OR,
             "Unpacking cpuworker reply %p, circ=%p, success=%d",
@@ -349,7 +375,7 @@ cpuworker_onion_handshake_replyfn(void *work_)
     goto done_processing;
   }
 
-  circ->workqueue_entry = NULL;
+  job->circ->workqueue_entry = NULL;
 
   if (TO_CIRCUIT(circ)->marked_for_close) {
     /* We already marked this circuit; we can't call it open. */
@@ -382,21 +408,21 @@ cpuworker_onion_handshake_replyfn(void *work_)
   queue_pending_tasks();
 }
 
-/** Implementation function for onion handshake requests. */
+/** Implementation function for server onion handshake requests. */
 static workqueue_reply_t
-cpuworker_onion_handshake_threadfn(void *state_, void *work_)
+cpuworker_onion_server_handshake_threadfn(void *state_, void *work_)
 {
   worker_state_t *state = state_;
   cpuworker_job_t *job = work_;
 
   /* variables for onion processing */
   server_onion_keys_t *onion_keys = state->onion_keys;
-  cpuworker_request_t req;
-  cpuworker_reply_t rpl;
+  cpuworker_onionskin_server_request_t req;
+  cpuworker_onionskin_server_reply_t rpl;
 
-  memcpy(&req, &job->u.request, sizeof(req));
+  memcpy(&req, &job->u.request.server_handshake, sizeof(req));
 
-  tor_assert(req.magic == CPUWORKER_REQUEST_MAGIC);
+  tor_assert(job->magic == CPUWORKER_ONIONSKIN_SERVER_REQUEST_MAGIC);
   memset(&rpl, 0, sizeof(rpl));
 
   const create_cell_t *cc = &req.create_cell;
@@ -436,7 +462,7 @@ cpuworker_onion_handshake_threadfn(void *state_, void *work_)
     }
     rpl.success = 1;
   }
-  rpl.magic = CPUWORKER_REPLY_MAGIC;
+  job->magic = CPUWORKER_ONIONSKIN_SERVER_REPLY_MAGIC;
   if (req.timed) {
     struct timeval tv_diff;
     int64_t usec;
@@ -449,43 +475,85 @@ cpuworker_onion_handshake_threadfn(void *state_, void *work_)
       rpl.n_usec = (uint32_t) usec;
   }
 
-  memcpy(&job->u.reply, &rpl, sizeof(rpl));
+  memcpy(&job->u.reply.server_handshake, &rpl, sizeof(rpl));
 
   memwipe(&req, 0, sizeof(req));
   memwipe(&rpl, 0, sizeof(req));
   return WQ_RPL_REPLY;
 }
 
-/** Take pending tasks from the queue and assign them to cpuworkers. */
+/** Take pending server tasks from the queue and assign them to cpuworkers. */
 static void
-queue_pending_tasks(void)
+queue_pending_server_tasks(void)
 {
-  or_circuit_t *circ;
-  create_cell_t *onionskin = NULL;
-
   while (total_pending_tasks < max_pending_tasks) {
+    or_circuit_t *circ;
+    create_cell_t *onionskin = NULL;
+
     circ = onion_next_task(&onionskin);
 
     if (!circ)
       return;
 
-    if (assign_onionskin_to_cpuworker(circ, onionskin))
+    if (assign_onionskin_server_to_cpuworker(circ, onionskin))
       log_warn(LD_OR,"assign_to_cpuworker failed. Ignoring.");
   }
 }
 
+/** Take pending client tasks from the queue and assign them to cpuworkers. */
+static void
+queue_pending_client_tasks(void)
+{
+  while (total_pending_tasks < max_pending_tasks) {
+    origin_circuit_t *circ;
+    created_cell_t *onionskin = NULL;
+    crypt_path_t *hop = NULL;
+
+    circ = origin_next_task(&onionskin, &hop);
+
+    if (!circ)
+      break;
+
+    if (assign_onionskin_client_to_cpuworker(circ, onionskin, hop))
+      log_warn(LD_OR,"assign_to_cpuworker failed. Ignoring.");
+    tor_free(onionskin); /* origin_next_task allocates... */
+  }
+}
+
+/** Take pending tasks from the queue and assign them to cpuworkers. */
+static void
+queue_pending_tasks(void)
+{
+  static int server_first = 1;
+
+  /* XXX/yawning: I'm not sure how to prioritize between server handshakes
+   * and client handshakes.  Since the code aggressively tries to flush out
+   * the queues, under load chances are only one slot will be available for
+   * jobs, so "alternate" avoids overly starving either, but it doesn't feel
+   * that great to me.
+   */
+  if (server_first) {
+    queue_pending_server_tasks();
+    queue_pending_client_tasks();
+  } else {
+    queue_pending_client_tasks();
+    queue_pending_server_tasks();
+  }
+  server_first = !server_first;
+}
+
 /** Try to tell a cpuworker to perform the public key operations necessary to
- * respond to <b>onionskin</b> for the circuit <b>circ</b>.
+ * respond as the server to <b>onionskin</b> for the circuit <b>circ</b>.
  *
  * Return 0 if we successfully assign the task, or -1 on failure.
  */
 int
-assign_onionskin_to_cpuworker(or_circuit_t *circ,
-                              create_cell_t *onionskin)
+assign_onionskin_server_to_cpuworker(or_circuit_t *circ,
+                                     create_cell_t *onionskin)
 {
   workqueue_entry_t *queue_entry;
   cpuworker_job_t *job;
-  cpuworker_request_t req;
+  cpuworker_onionskin_server_request_t req;
   int should_time;
 
   tor_assert(threadpool);
@@ -510,7 +578,6 @@ assign_onionskin_to_cpuworker(or_circuit_t *circ,
 
   should_time = should_time_request(onionskin->handshake_type);
   memset(&req, 0, sizeof(req));
-  req.magic = CPUWORKER_REQUEST_MAGIC;
   req.timed = should_time;
 
   memcpy(&req.create_cell, onionskin, sizeof(create_cell_t));
@@ -521,15 +588,16 @@ assign_onionskin_to_cpuworker(or_circuit_t *circ,
     tor_gettimeofday(&req.started_at);
 
   job = tor_malloc_zero(sizeof(cpuworker_job_t));
-  job->circ = circ;
-  memcpy(&job->u.request, &req, sizeof(req));
+  job->circ = TO_CIRCUIT(circ);
+  job->magic = CPUWORKER_ONIONSKIN_SERVER_REQUEST_MAGIC;
+  memcpy(&job->u.request.server_handshake, &req, sizeof(req));
   memwipe(&req, 0, sizeof(req));
 
   ++total_pending_tasks;
   queue_entry = threadpool_queue_work(threadpool,
-                                      cpuworker_onion_handshake_threadfn,
-                                      cpuworker_onion_handshake_replyfn,
-                                      job);
+                                  cpuworker_onion_server_handshake_threadfn,
+                                  cpuworker_onion_server_handshake_replyfn,
+                                  job);
   if (!queue_entry) {
     log_warn(LD_BUG, "Couldn't queue work on threadpool");
     tor_free(job);
@@ -537,9 +605,9 @@ assign_onionskin_to_cpuworker(or_circuit_t *circ,
   }
 
   log_debug(LD_OR, "Queued task %p (qe=%p, circ=%p)",
-            job, queue_entry, job->circ);
+            job, queue_entry, circ);
 
-  circ->workqueue_entry = queue_entry;
+  job->circ->workqueue_entry = queue_entry;
 
   return 0;
 }
@@ -547,9 +615,10 @@ assign_onionskin_to_cpuworker(or_circuit_t *circ,
 /** If <b>circ</b> has a pending handshake that hasn't been processed yet,
  * remove it from the worker queue. */
 void
-cpuworker_cancel_circ_handshake(or_circuit_t *circ)
+cpuworker_cancel_circ_handshake(circuit_t *circ)
 {
   cpuworker_job_t *job;
+
   if (circ->workqueue_entry == NULL)
     return;
 
@@ -563,5 +632,181 @@ cpuworker_cancel_circ_handshake(or_circuit_t *circ)
     /* if (!job), this is done in cpuworker_onion_handshake_replyfn. */
     circ->workqueue_entry = NULL;
   }
+}
+
+/** Handle a client onionskin reply from the worker threads. */
+static void
+cpuworker_onion_client_replyfn(void *work_)
+{
+  cpuworker_job_t *job = work_;
+
+  cpuworker_onionskin_client_reply_t rpl;
+
+  tor_assert(total_pending_tasks > 0);
+  --total_pending_tasks;
+
+  /* Could avoid this, but doesn't matter. */
+  memcpy(&rpl, &job->u.reply.client_handshake, sizeof(rpl));
+
+  tor_assert(job->magic == CPUWORKER_ONIONSKIN_CLIENT_REPLY_MAGIC);
+
+  origin_circuit_t *circ = TO_ORIGIN_CIRCUIT(job->circ);
+  crypt_path_t *hop = circ->workqueue_hop;
+  log_debug(LD_OR,
+            "Unpacking cpuworker reply %p, circ=%p, success=%d",
+            job, circ, rpl.success);
+
+  if (circ->base_.magic == DEAD_CIRCUIT_MAGIC) {
+    /* The circuit was supposed to get freed while the reply was
+     * pending. Instead, it got left for us to free so that we wouldn't freak
+     * out when the job->circ field wound up pointing to nothing. */
+    log_debug(LD_OR, "Circuit died while reply was pending. Freeing memory.");
+    circ->base_.magic = 0;
+    tor_free(circ);
+    goto done_processing;
+  }
+
+  job->circ->workqueue_entry = NULL;
+  circ->workqueue_hop = NULL;
+
+  if (TO_CIRCUIT(circ)->marked_for_close) {
+    /* We already marked this circuit; we can't call it open. */
+    log_debug(LD_OR,"circuit is already marked.");
+    goto done_processing;
+  }
+
+  if (rpl.success == 0) {
+    /* The worker should have already logged... */
+    circuit_mark_for_close(TO_CIRCUIT(circ), END_CIRC_REASON_TORPROTOCOL);
+    goto done_processing;
+  }
+
+  /* Finish up the handshake, and initialize the path crypto. */
+  memcpy(hop->rend_circ_nonce, rpl.rend_auth_material, DIGEST_LEN);
+  onion_handshake_state_release(&hop->handshake_state);
+
+  circuit_set_state(job->circ, CIRCUIT_STATE_BUILDING);
+  if (circuit_init_cpath_crypto(hop, (char*)rpl.keys, 0)<0) {
+    circuit_mark_for_close(TO_CIRCUIT(circ), END_CIRC_REASON_TORPROTOCOL);
+    goto done_processing;
+  }
+
+  hop->state = CPATH_STATE_OPEN;
+  log_info(LD_CIRC,"Finished building circuit hop:");
+  circuit_log_path(LOG_INFO,LD_CIRC,circ);
+  control_event_circuit_status(circ, CIRC_EVENT_EXTENDED, 0);
+
+  /* Extend to the next onion skin if necessary. */
+  int err_reason = 0;
+  log_debug(LD_OR,"Moving to next skin.");
+  if ((err_reason = circuit_send_next_onion_skin(circ)) < 0) {
+    log_info(LD_OR,"circuit_send_next_onion_skin failed.");
+    circuit_mark_for_close(TO_CIRCUIT(circ), -err_reason);
+    goto done_processing;
+  }
+
+ done_processing:
+  memwipe(&rpl, 0, sizeof(rpl));
+  memwipe(job, 0, sizeof(*job));
+  tor_free(job);
+  queue_pending_tasks();
+}
+
+/** Implementation function for client onion handshake requests. */
+static workqueue_reply_t
+cpuworker_onion_client_threadfn(void *state_,void *work_)
+{
+  cpuworker_job_t *job = work_;
+  (void)state_;
+
+  /* variables for onion processing */
+  cpuworker_onionskin_client_request_t req;
+  cpuworker_onionskin_client_reply_t rpl;
+
+  memcpy(&req, &job->u.request.client_handshake, sizeof(req));
+  tor_assert(job->magic == CPUWORKER_ONIONSKIN_CLIENT_REQUEST_MAGIC);
+  memset(&rpl, 0, sizeof(rpl));
+
+  const created_cell_t *cc = &req.created_cell;
+  const crypt_path_t *hop = TO_ORIGIN_CIRCUIT(job->circ)->workqueue_hop;
+  const char *msg = NULL;
+  int n;
+  n = onion_skin_client_handshake(hop->handshake_state.tag,
+                                  &hop->handshake_state,
+                                  cc->reply, cc->handshake_len,
+                                  rpl.keys, CPATH_KEY_MATERIAL_LEN,
+                                  rpl.rend_auth_material,
+                                  &msg);
+  if (n < 0) {
+    /* failure */
+    if (msg)
+      log_warn(LD_CIRC,"onion_skin_client_handshake failed: %s", msg);
+    memset(&rpl, 0, sizeof(rpl));
+    rpl.success = 0;
+  } else {
+    /* success */
+    log_debug(LD_OR,"onion_skin_client_handshake succeeded.");
+    rpl.success = 1;
+  }
+  job->magic = CPUWORKER_ONIONSKIN_CLIENT_REPLY_MAGIC;
+
+  memcpy(&job->u.reply.client_handshake, &rpl, sizeof(rpl));
+
+  memwipe(&req, 0, sizeof(req));
+  memwipe(&rpl, 0, sizeof(req));
+  return WQ_RPL_REPLY;
+}
+
+/** Try to tell a cpuworker to perform the public key operations necessary to
+ * respond as the client to <b>onionskin</b> for the circuit <b>circ</b>.
+ *
+ * Return 0 if we successfully assign the task, or -1 on failure.
+ */
+int
+assign_onionskin_client_to_cpuworker(origin_circuit_t *circ,
+                                     const struct created_cell_t *created,
+                                     crypt_path_t *hop)
+{
+  workqueue_entry_t *queue_entry;
+  cpuworker_job_t *job;
+  cpuworker_onionskin_client_request_t req;
+
+  tor_assert(threadpool);
+  tor_assert(circ->workqueue_hop == NULL);
+
+  if (total_pending_tasks >= max_pending_tasks) {
+    log_debug(LD_OR,"No idle cpuworkers. Queuing.");
+    if (origin_pending_add(circ, created, hop) < 0) {
+      return -1;
+    }
+  }
+
+  memset(&req, 0, sizeof(req));
+  memcpy(&req.created_cell, created, sizeof(created_cell_t));
+
+  job = tor_malloc_zero(sizeof(cpuworker_job_t));
+  job->circ = TO_CIRCUIT(circ);
+  job->magic = CPUWORKER_ONIONSKIN_CLIENT_REQUEST_MAGIC;
+  memcpy(&job->u.request.client_handshake, &req, sizeof(req));
+  memwipe(&req, 0, sizeof(req));
+  circ->workqueue_hop = hop;
+
+  ++total_pending_tasks;
+  queue_entry = threadpool_queue_work(threadpool,
+                                      cpuworker_onion_client_threadfn,
+                                      cpuworker_onion_client_replyfn,
+                                      job);
+  if (!queue_entry) {
+    log_warn(LD_BUG, "Couldn't queue work on threadpool");
+    tor_free(job);
+    return -1;
+  }
+
+  log_debug(LD_OR, "Queued task %p (qe=%p, circ=%p)",
+            job, queue_entry, circ);
+
+  job->circ->workqueue_entry = queue_entry;
+
+  return 0;
 }
 

@@ -26,6 +26,7 @@
 #include "connection_edge.h"
 #include "connection_or.h"
 #include "control.h"
+#include "cpuworker.h"
 #include "directory.h"
 #include "entrynodes.h"
 #include "main.h"
@@ -48,6 +49,19 @@
 #ifndef MIN
 #define MIN(a,b) ((a)<(b)?(a):(b))
 #endif
+
+/** Type for a linked list of origin circuits that are waiting for a free CPU
+ * worker to process a waiting onion handshake (client side). */
+typedef struct origin_entry_s {
+  origin_circuit_t *circ;
+  crypt_path_t *hop;
+  struct created_cell_t onionskin;
+  TOR_TAILQ_ENTRY(origin_entry_s) qh;
+} origin_entry_t;
+
+/** A tail queue of origin circuits waiting for CPU workers. */
+static TOR_TAILQ_HEAD(origin_queue_s, origin_entry_s) origin_queue =
+  TOR_TAILQ_HEAD_INITIALIZER(origin_queue);
 
 static channel_t * channel_connect_for_circuit(const tor_addr_t *addr,
                                                uint16_t port,
@@ -1246,8 +1260,7 @@ circuit_init_cpath_crypto(crypt_path_t *cpath, const char *key_data,
  * (The body of <b>reply</b> varies depending on what sort of handshake
  * this is.)
  *
- * Calculate the appropriate keys and digests, make sure KH is
- * correct, and initialize this hop of the cpath.
+ * Dispatch the handshake off to the cpuworker thread pool.
  *
  * Return - reason if we want to mark circ for close, else return 0.
  */
@@ -1255,7 +1268,6 @@ int
 circuit_finish_handshake(origin_circuit_t *circ,
                          const created_cell_t *reply)
 {
-  char keys[CPATH_KEY_MATERIAL_LEN];
   crypt_path_t *hop;
   int rv;
 
@@ -1275,30 +1287,11 @@ circuit_finish_handshake(origin_circuit_t *circ,
   }
   tor_assert(hop->state == CPATH_STATE_AWAITING_KEYS);
 
-  {
-    const char *msg = NULL;
-    if (onion_skin_client_handshake(hop->handshake_state.tag,
-                                    &hop->handshake_state,
-                                    reply->reply, reply->handshake_len,
-                                    (uint8_t*)keys, sizeof(keys),
-                                    (uint8_t*)hop->rend_circ_nonce,
-                                    &msg) < 0) {
-      if (msg)
-        log_warn(LD_CIRC,"onion_skin_client_handshake failed: %s", msg);
-      return -END_CIRC_REASON_TORPROTOCOL;
-    }
+  circuit_set_state(TO_CIRCUIT(circ), CIRCUIT_STATE_ONIONSKIN_PENDING);
+  if ((rv = assign_onionskin_client_to_cpuworker(circ, reply, hop)) < 0) {
+    log_debug(LD_GENERAL,"Failed to hand off CREATED cell. Closing.");
+    return - END_CIRC_REASON_RESOURCELIMIT;
   }
-
-  onion_handshake_state_release(&hop->handshake_state);
-
-  if (circuit_init_cpath_crypto(hop, keys, 0)<0) {
-    return -END_CIRC_REASON_TORPROTOCOL;
-  }
-
-  hop->state = CPATH_STATE_OPEN;
-  log_info(LD_CIRC,"Finished building circuit hop:");
-  circuit_log_path(LOG_INFO,LD_CIRC,circ);
-  control_event_circuit_status(circ, CIRC_EVENT_EXTENDED, 0);
 
   return 0;
 }
@@ -2401,5 +2394,73 @@ build_state_get_exit_nickname(cpath_build_state_t *state)
   if (!state || !state->chosen_exit)
     return NULL;
   return state->chosen_exit->nickname;
+}
+
+/** Add <b>circ</b> to the end of origin_queue.  Returns 0 on success, -1 on
+ * failure. */
+int
+origin_pending_add(origin_circuit_t *circ,
+                   const struct created_cell_t *onionskin,
+                   crypt_path_t *hop)
+{
+  origin_entry_t *ent;
+
+  /* XXX/yawning: Should there be a limit for the max number of pending
+   * client onionskins, like there is for server?
+   */
+  ent = tor_malloc_zero(sizeof(*ent));
+  ent->circ = circ;
+  ent->hop = hop;
+  memcpy(&ent->onionskin, onionskin, sizeof(*onionskin));
+
+  TOR_TAILQ_INSERT_TAIL(&origin_queue, ent, qh);
+
+  return 0;
+}
+
+/** Remove the highest priority item from origin_queue and return it, or
+ * return NULL if the queue is empty.  The caller is responsible for freeing
+ * onionskin_out.
+ */
+origin_circuit_t *
+origin_next_task(struct created_cell_t **onionskin_out, crypt_path_t **hop_out)
+{
+
+  origin_entry_t *ent;
+  origin_circuit_t *ret;
+  struct created_cell_t *onionskin;
+
+  if (TOR_TAILQ_EMPTY(&origin_queue))
+    return NULL;
+
+  ent = TOR_TAILQ_FIRST(&origin_queue);
+  ret = ent->circ;
+  *hop_out = ent->hop;
+  onionskin = tor_malloc_zero(sizeof(*onionskin));
+  memcpy(onionskin, &ent->onionskin, sizeof(*onionskin));
+  *onionskin_out = onionskin;
+
+  TOR_TAILQ_REMOVE(&origin_queue, ent, qh);
+  memwipe(ent, 0, sizeof(*ent));
+  tor_free(ent);
+
+  return ret;
+}
+
+void
+origin_pending_remove(origin_circuit_t *circ)
+{
+  origin_entry_t *ent;
+
+  TOR_TAILQ_FOREACH(ent, &origin_queue, qh) {
+    if (ent->circ == circ) {
+      TOR_TAILQ_REMOVE(&origin_queue, ent, qh);
+      memwipe(ent, 0, sizeof(*ent));
+      tor_free(ent);
+      break;
+    }
+  }
+
+  cpuworker_cancel_circ_handshake(TO_CIRCUIT(circ));
 }
 

@@ -310,7 +310,7 @@ command_process_create_cell(cell_t *cell, channel_t *chan)
     /* hand it off to the cpuworkers, and then return. */
     if (connection_or_digest_is_known_relay(chan->identity_digest))
       rep_hist_note_circuit_handshake_requested(create_cell->handshake_type);
-    if (assign_onionskin_to_cpuworker(circ, create_cell) < 0) {
+    if (assign_onionskin_server_to_cpuworker(circ, create_cell) < 0) {
       log_debug(LD_GENERAL,"Failed to hand off onionskin. Closing.");
       circuit_mark_for_close(TO_CIRCUIT(circ), END_CIRC_REASON_RESOURCELIMIT);
       return;
@@ -360,8 +360,7 @@ command_process_create_cell(cell_t *cell, channel_t *chan)
  * that it's intended for. If we're not the origin of the circuit, package
  * the 'created' cell in an 'extended' relay cell and pass it back. If we
  * are the origin of the circuit, send it to circuit_finish_handshake() to
- * finish processing keys, and then call circuit_send_next_onion_skin() to
- * extend to the next hop in the circuit if necessary.
+ * dispatch the cell to the cpuworker for processing.
  */
 static void
 command_process_created_cell(cell_t *cell, channel_t *chan)
@@ -395,15 +394,11 @@ command_process_created_cell(cell_t *cell, channel_t *chan)
     origin_circuit_t *origin_circ = TO_ORIGIN_CIRCUIT(circ);
     int err_reason = 0;
     log_debug(LD_OR,"at OP. Finishing handshake.");
+    /* circuit_finish_handshake() will dispatch the created cell to the
+     * cpuworker.
+     */
     if ((err_reason = circuit_finish_handshake(origin_circ,
                                         &extended_cell.created_cell)) < 0) {
-      circuit_mark_for_close(circ, -err_reason);
-      return;
-    }
-    log_debug(LD_OR,"Moving to next skin.");
-    if ((err_reason = circuit_send_next_onion_skin(origin_circ)) < 0) {
-      log_info(LD_OR,"circuit_send_next_onion_skin failed.");
-      /* XXX push this circuit_close lower */
       circuit_mark_for_close(circ, -err_reason);
       return;
     }

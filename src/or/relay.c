@@ -1651,10 +1651,6 @@ connection_edge_process_relay_cell(cell_t *cell, circuit_t *circ,
                      * here. */
         }
       }
-      if ((reason=circuit_send_next_onion_skin(TO_ORIGIN_CIRCUIT(circ)))<0) {
-        log_info(domain,"circuit_send_next_onion_skin() failed.");
-        return reason;
-      }
       return 0;
     case RELAY_COMMAND_TRUNCATE:
       if (layer_hint) {

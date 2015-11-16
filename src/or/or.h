@@ -2920,6 +2920,11 @@ typedef struct circuit_t {
    * circuit's queues; used only if CELL_STATS events are enabled and
    * cleared after being sent to control port. */
   smartlist_t *testing_cell_stats;
+
+  /** Pointer to a workqueue entry, if this circuit has given an onionskin to
+   * a cpuworker and is waiting for a response. Used to decide whether it is
+   * safe to free a circuit or if it is still in use by a cpuworker. */
+  struct workqueue_entry_s *workqueue_entry;
 } circuit_t;
 
 /** Largest number of relay_early cells that we can send on a given
@@ -2987,6 +2992,10 @@ typedef enum {
  */
 typedef struct origin_circuit_t {
   circuit_t base_;
+
+  /** The hop for which there is a pending workqueue entry.  Only used in
+   * cpuworker.c. */
+  crypt_path_t *workqueue_hop;
 
   /** Linked list of AP streams (or EXIT streams if hidden service)
    * associated with this circuit. */
@@ -3179,10 +3188,6 @@ typedef struct or_circuit_t {
   /** Pointer to an entry on the onion queue, if this circuit is waiting for a
    * chance to give an onionskin to a cpuworker. Used only in onion.c */
   struct onion_queue_t *onionqueue_entry;
-  /** Pointer to a workqueue entry, if this circuit has given an onionskin to
-   * a cpuworker and is waiting for a response. Used to decide whether it is
-   * safe to free a circuit or if it is still in use by a cpuworker. */
-  struct workqueue_entry_s *workqueue_entry;
 
   /** The circuit_id used in the previous (backward) hop of this circuit. */
   circid_t p_circ_id;

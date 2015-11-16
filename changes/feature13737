@@ -1,0 +1,5 @@
+  o Major features (performance):
+    - Add support for using the thread pool to handle the client side
+      onion skin processing. This will allow for better server side
+      performance for Hidden Services that handle large numbers of
+      clients.  Implements feature 13737.

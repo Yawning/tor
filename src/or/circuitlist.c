@@ -765,6 +765,7 @@ circuit_free(circuit_t *circ)
   if (!circ)
     return;
 
+   should_free = (circ->workqueue_entry == NULL);
   if (CIRCUIT_IS_ORIGIN(circ)) {
     origin_circuit_t *ocirc = TO_ORIGIN_CIRCUIT(circ);
     mem = ocirc;
@@ -800,8 +801,6 @@ circuit_free(circuit_t *circ)
     mem = ocirc;
     memlen = sizeof(or_circuit_t);
     tor_assert(circ->magic == OR_CIRCUIT_MAGIC);
-
-    should_free = (ocirc->workqueue_entry == NULL);
 
     crypto_cipher_free(ocirc->p_crypto);
     crypto_digest_free(ocirc->p_digest);
@@ -1753,7 +1752,10 @@ circuit_about_to_free(circuit_t *circ)
   int orig_reason = circ->marked_for_close_orig_reason;
 
   if (circ->state == CIRCUIT_STATE_ONIONSKIN_PENDING) {
-    onion_pending_remove(TO_OR_CIRCUIT(circ));
+    if (CIRCUIT_IS_ORIGIN(circ))
+      origin_pending_remove(TO_ORIGIN_CIRCUIT(circ));
+    else
+      onion_pending_remove(TO_OR_CIRCUIT(circ));
   }
   /* If the circuit ever became OPEN, we sent it to the reputation history
    * module then.  If it isn't OPEN, we send it there now to remember which
