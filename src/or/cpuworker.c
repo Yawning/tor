@@ -42,7 +42,8 @@ worker_state_new(void *arg)
   worker_state_t *ws;
   (void)arg;
   ws = tor_malloc_zero(sizeof(worker_state_t));
-  ws->onion_keys = server_onion_keys_new();
+  if (server_mode(get_options()))
+    ws->onion_keys = server_onion_keys_new();
   return ws;
 }
 static void
@@ -178,12 +179,7 @@ update_state_threadfn(void *state_, void *work_)
 void
 cpuworkers_rotate_keyinfo(void)
 {
-  if (!threadpool) {
-    /* If we're a client, then we won't have cpuworkers, and we won't need
-     * to tell them to rotate their state.
-     */
-    return;
-  }
+  tor_assert(threadpool);
   if (threadpool_queue_update(threadpool,
                               worker_state_new,
                               update_state_threadfn,

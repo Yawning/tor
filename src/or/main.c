@@ -2126,10 +2126,8 @@ do_main_loop(void)
   now = time(NULL);
   directory_info_has_arrived(now, 1);
 
-  if (server_mode(get_options())) {
-    /* launch cpuworkers. Need to do this *after* we've read the onion key. */
-    cpu_init();
-  }
+  /* launch cpuworkers. Need to do this *after* we've read the onion key. */
+  cpu_init();
 
   /* set up once-a-second callback. */
   if (! second_timer) {
