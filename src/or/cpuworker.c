@@ -170,7 +170,7 @@ typedef struct cpuworker_onionskin_client_reply_t {
 } cpuworker_onionskin_client_reply_t;
 
 typedef struct cpuworker_job_u {
-  /** Magic number; must be CPUWORKER_[type]_[REQUEST,RESPONSE]_MAGIC. */
+  /** Magic number; must be CPUWORKER_[type]_[REQUEST,REPLY]_MAGIC. */
   uint32_t magic;
   /** The circuit with which this job is associated with. */
   circuit_t *circ;
