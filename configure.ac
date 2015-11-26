@@ -384,6 +384,7 @@ AC_CHECK_FUNCS(
         flock \
         ftime \
         getaddrinfo \
+        getentropy \
         getifaddrs \
         getpass \
         getrlimit \

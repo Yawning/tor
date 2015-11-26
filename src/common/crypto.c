@@ -2399,6 +2399,10 @@ crypto_strongest_rand_syscall(uint8_t *out, size_t out_len)
   if (PREDICT_LIKELY(getrandom_works)) {
     int ret;
     do {
+      /* A flag of '0' here means to read from '/dev/urandom', and to
+       * block if insufficient entropy is available to service the
+       * request.
+       */
       ret = syscall(SYS_getrandom, out, out_len, 0);
     } while (ret == -1 && ((errno == EINTR) ||(errno == EAGAIN)));
 
@@ -2417,7 +2421,7 @@ crypto_strongest_rand_syscall(uint8_t *out, size_t out_len)
   }
 
   return -1; /* getrandom() previously failed unexpectedly. */
-#elif ((defined(__OpenBSD__) && OpenBSD >= 201411 /* 5.6 */))
+#elif defined(HAVE_GETENTROPY)
   /* getentropy() is what Linux's getrandom() wants to be when it grows up.
    * the only gotcha is that requests are limited to 256 bytes.
    */
@@ -2474,20 +2478,43 @@ crypto_strongest_rand_fallback(uint8_t *out, size_t out_len)
 int
 crypto_strongest_rand(uint8_t *out, size_t out_len)
 {
+  static const size_t sanity_min_size = 16;
+  static const int max_attempts = 3;
   tor_assert(out_len <= MAX_STRONGEST_RAND_SIZE);
 
-  /* Try to use the syscall/OS favored mechanism to get strong entropy. */
-  if (crypto_strongest_rand_syscall(out, out_len) == 0)
-    return 0;
-
-  /* Try to use the less-favored mechanism to get strong entropy. */
-  if (crypto_strongest_rand_fallback(out, out_len) == 0)
-    return 0;
-
-  /* Welp, we tried.  Hopefully the calling code terminates the process since
-   * we're basically boned without good entropy.
+  /* For buffers >= 16 bytes (128 bits), we sanity check the output by
+   * zero filling the buffer and ensuring that it actually was at least
+   * partially modified.
+   *
+   * Checking that any individual byte is non-zero seems like it would
+   * fail too often (p = out_len * 1/256) for comfort, but this is an
+   * "adjust according to taste" sort of check.
    */
-  log_warn(LD_CRYPTO, "Cannot get strong entropy: no entropy source found.");
+  memwipe(out, 0, out_len);
+  for (int i = 0; i < max_attempts; i++) {
+    /* Try to use the syscall/OS favored mechanism to get strong entropy. */
+    if (crypto_strongest_rand_syscall(out, out_len) != 0) {
+      /* Try to use the less-favored mechanism to get strong entropy. */
+      if (crypto_strongest_rand_fallback(out, out_len) != 0) {
+        /* Welp, we tried.  Hopefully the calling code terminates the process
+         * since we're basically boned without good entropy.
+         */
+        log_warn(LD_CRYPTO,
+                 "Cannot get strong entropy: no entropy source found.");
+        return -1;
+      }
+    }
+
+    if ((out_len < sanity_min_size) || !tor_mem_is_zero((char*)out, out_len))
+      return 0;
+  }
+
+  /* We tried max_attempts times to fill a buffer >= 128 bits long,
+   * and each time it returned all '0's.  Either the system entropy
+   * source is busted, or the user should go out and buy a ticket to
+   * every lottery on the planet.
+   */
+  log_warn(LD_CRYPTO, "Strong OS entropy returned all zero buffer.");
   return -1;
 }
 
