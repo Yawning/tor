@@ -1965,6 +1965,62 @@ crypto_hmac_sha256(char *hmac_out,
   tor_assert(rv);
 }
 
+/** Intermediary state for a eXtendable-Output Function (XOF). */
+struct crypto_xof_t {
+  keccak_state s;
+};
+
+/** Allocate a new XOF object.  The security level provided is a function of
+ * the length of the output used.  Read and understand FIPS-202 A.2
+ * "Additional Consideration for Extendable-Output Functions" before using
+ * this construct.
+ */
+crypto_xof_t *
+crypto_xof_new(void)
+{
+  int i;
+  crypto_xof_t *xof;
+  xof = tor_malloc(sizeof(crypto_xof_t));
+  i = keccak_init(&xof->s, KECCAK_TARGET_TO_RATE(256), KECCAK_XOF_DELIM);
+  tor_assert(i == 0);
+  return xof;
+}
+
+/** Absorb bytes into a XOF object.  Must not be called after a call to
+ * crypto_xof_squeeze_bytes() for the same instance.
+ */
+void
+crypto_xof_add_bytes(crypto_xof_t *xof, const uint8_t *data, size_t len)
+{
+  int i;
+  i = keccak_update(&xof->s, data, len);
+  tor_assert(i == 0);
+}
+
+/** Squeeze bytes out of a XOF object. */
+void
+crypto_xof_squeeze_bytes(crypto_xof_t *xof, uint8_t *out, size_t len)
+{
+  int i;
+  if (!xof->s.finalized) {
+    i = keccak_finalize(&xof->s);
+    tor_assert(i == 0);
+  }
+
+  i = keccak_squeeze(&xof->s, out, len);
+  tor_assert(i == 0);
+}
+
+/** Cleanse and deallocate a XOF object. */
+void
+crypto_xof_free(crypto_xof_t *xof)
+{
+  if (!xof)
+    return;
+  memwipe(xof, 0, sizeof(crypto_xof_t));
+  tor_free(xof);
+}
+
 /* DH */
 
 /** Our DH 'g' parameter */
