@@ -8,10 +8,12 @@
  */
 #include "keccak-tiny.h"
 
-#include <stdint.h>
+#include "torint.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "crypto.h"
 
 /******** The Keccak-f[1600] permutation ********/
 
@@ -102,16 +104,153 @@ mkapply_ds(xorin, dst[i] ^= src[i])  // xorin
 mkapply_sd(setout, dst[i] = src[i])  // setout
 
 #define P keccakf
-#define Plen 200
+#define Plen KECCAK_MAX_RATE
 
 // Fold P*F over the full blocks of an input.
 #define foldP(I, L, F) \
-  while (L >= rate) {  \
-    F(a, I, rate);     \
-    P(a);              \
-    I += rate;         \
-    L -= rate;         \
+  while (L >= s->rate) {  \
+    F(s->a, I, s->rate);  \
+    P(s->a);              \
+    I += s->rate;         \
+    L -= s->rate;         \
   }
+
+int
+keccak_init(keccak_state *s, size_t rate, uint8_t delim)
+{
+  if (rate > sizeof(s->a))
+    return -1;
+
+  keccak_cleanse(s);
+  s->rate = rate;
+  s->delim = delim;
+  return 0;
+}
+
+void
+keccak_clone(keccak_state *out, const keccak_state *in)
+{
+  memcpy(out, in, sizeof(*out));
+}
+
+static inline void
+keccak_absorb_blocks(keccak_state *s, const uint8_t *b, size_t nr_blocks)
+{
+  // Absorb input.
+  size_t blen = nr_blocks * s->rate;
+  foldP(b, blen, xorin);
+}
+
+int
+keccak_update(keccak_state *s, const uint8_t *buf, size_t len)
+{
+  if (s->finalized)
+    return -1;
+  if (buf == NULL) {
+    if (len != 0)
+      return -1;
+    return 0;
+  }
+
+  size_t remaining = len;
+  while (remaining > 0) {
+    if (s->offset == 0) {
+      const size_t blocks = remaining / s->rate;
+      size_t direct_bytes = blocks * s->rate;
+      if (direct_bytes > 0) {
+        keccak_absorb_blocks(s, buf, blocks);
+        remaining -= direct_bytes;
+        buf += direct_bytes;
+      }
+    }
+
+    const size_t buf_avail = s->rate - s->offset;
+    const size_t buf_bytes = (buf_avail > remaining) ? remaining : buf_avail;
+    if (buf_bytes > 0) {
+      memcpy(&s->block[s->offset], buf, buf_bytes);
+      s->offset += buf_bytes;
+      remaining -= buf_bytes;
+      buf += buf_bytes;
+    }
+    if (s->offset == s->rate) {
+      keccak_absorb_blocks(s, s->block, 1);
+      s->offset = 0;
+    }
+  }
+  return 0;
+}
+
+int
+keccak_finalize(keccak_state *s)
+{
+  if (s->finalized)
+    return -1;
+
+  s->finalized = 1;
+
+  // Xor in the DS and pad frame.
+  s->a[s->offset] ^= s->delim;
+  s->a[s->rate - 1] ^= 0x80;
+  // Xor in the last block.
+  xorin(s->a, s->block, s->offset);
+
+  memwipe(s->block, 0, sizeof(s->block));
+  s->offset = s->rate;
+
+  return 0;
+}
+
+static inline void
+keccak_squeeze_blocks(keccak_state *s, uint8_t *b, size_t nr_blocks)
+{
+  for (size_t n = 0; n < nr_blocks; n++) {
+    size_t tmp = s->rate;
+    keccakf(s->a);
+    setout(s->a, b, tmp);
+    b += s->rate;
+  }
+}
+
+int
+keccak_squeeze(keccak_state *s, uint8_t *out, size_t outlen)
+{
+  if (!s->finalized)
+    return -1;
+
+  size_t remaining = outlen;
+  while (remaining > 0) {
+    if (s->offset == s->rate) {
+      const size_t blocks = remaining / s->rate;
+      const size_t direct_bytes = blocks * s->rate;
+      if (blocks > 0) {
+        keccak_squeeze_blocks(s, out, blocks);
+        out += direct_bytes;
+        remaining -= direct_bytes;
+      }
+
+      if (remaining > 0) {
+        keccak_squeeze_blocks(s, s->block, 1);
+        s->offset = 0;
+      }
+    }
+
+    const size_t buf_bytes = s->rate - s->offset;
+    const size_t indirect_bytes = (buf_bytes > remaining) ? remaining : buf_bytes;
+    if (indirect_bytes > 0) {
+      memcpy(out, &s->block[s->offset], indirect_bytes);
+      out += indirect_bytes;
+      s->offset += indirect_bytes;
+      remaining -= indirect_bytes;
+    }
+  }
+  return 0;
+}
+
+void
+keccak_cleanse(keccak_state *s)
+{
+  memwipe(s, 0, sizeof(*s));
+}
 
 /** The sponge-based hash construction. **/
 static inline int hash(uint8_t* out, size_t outlen,
@@ -120,6 +259,16 @@ static inline int hash(uint8_t* out, size_t outlen,
   if ((out == NULL) || ((in == NULL) && inlen != 0) || (rate >= Plen)) {
     return -1;
   }
+
+  int ret = 0;
+  keccak_state s;
+  ret |= keccak_init(&s, rate, delim);
+  ret |= keccak_update(&s, in, inlen);
+  ret |= keccak_finalize(&s);
+  ret |= keccak_squeeze(&s, out, outlen);
+  keccak_cleanse(&s);
+  return ret;
+#if 0
   uint8_t a[Plen] = {0};
   // Absorb input.
   foldP(in, inlen, xorin);
@@ -135,6 +284,7 @@ static inline int hash(uint8_t* out, size_t outlen,
   setout(a, out, outlen);
   memset_s(a, 200, 0, 200);
   return 0;
+#endif
 }
 
 /*** Helper macros to define SHA3 and SHAKE instances. ***/
