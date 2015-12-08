@@ -60,6 +60,8 @@
 #include "sandbox.h"
 #include "util_format.h"
 
+#include "keccak-tiny/keccak-tiny.h"
+
 #ifdef ANDROID
 /* Android's OpenSSL seems to have removed all of its Engine support. */
 #define DISABLE_ENGINES
@@ -1609,8 +1611,11 @@ crypto_digest256(char *digest, const char *m, size_t len,
 {
   tor_assert(m);
   tor_assert(digest);
-  tor_assert(algorithm == DIGEST_SHA256);
-  return (SHA256((const unsigned char*)m,len,(unsigned char*)digest) == NULL);
+  tor_assert(algorithm == DIGEST_SHA256 || algorithm == DIGEST_SHA3_256);
+  if (algorithm == DIGEST_SHA256)
+    return (SHA256((const unsigned char*)m,len,(unsigned char*)digest) == NULL);
+  else
+    return (sha3_256((uint8_t*)digest, DIGEST256_LEN, (const uint8_t*)m, len) == -1);
 }
 
 /** Compute a 512-bit digest of <b>len</b> bytes in data stored in <b>m</b>,
@@ -1622,8 +1627,11 @@ crypto_digest512(char *digest, const char *m, size_t len,
 {
   tor_assert(m);
   tor_assert(digest);
-  tor_assert(algorithm == DIGEST_SHA512);
-  return (SHA512((const unsigned char*)m,len,(unsigned char*)digest) == NULL);
+  tor_assert(algorithm == DIGEST_SHA512 || algorithm == DIGEST_SHA3_512);
+  if (algorithm == DIGEST_SHA512)
+    return (SHA512((const unsigned char*)m,len,(unsigned char*)digest) == NULL);
+  else
+    return (sha3_512((uint8_t*)digest, DIGEST512_LEN, (const uint8_t*)m, len) == -1);
 }
 
 /** Set the digests_t in <b>ds_out</b> to contain every digest on the
@@ -1639,11 +1647,13 @@ crypto_digest_all(digests_t *ds_out, const char *m, size_t len)
     return -1;
   for (i = DIGEST_SHA256; i < N_DIGEST_ALGORITHMS; ++i) {
       switch (i) {
-        case DIGEST_SHA256:
+        case DIGEST_SHA256: /* FALLSTHROUGH */
+        case DIGEST_SHA3_256:
           if (crypto_digest256(ds_out->d[i], m, len, i) < 0)
             return -1;
           break;
-        case DIGEST_SHA512:
+        case DIGEST_SHA512: /* FALLSTHROUGH */
+        case DIGEST_SHA3_512:
           if (crypto_digest512(ds_out->d[i], m, len, i) < 0)
             return -1;
           break;
@@ -1665,6 +1675,10 @@ crypto_digest_algorithm_get_name(digest_algorithm_t alg)
       return "sha256";
     case DIGEST_SHA512:
       return "sha512";
+    case DIGEST_SHA3_256:
+      return "sha3-256";
+    case DIGEST_SHA3_512:
+      return "sha3-512";
     default:
       tor_fragile_assert();
       return "??unknown_digest??";
@@ -1682,6 +1696,10 @@ crypto_digest_algorithm_parse_name(const char *name)
     return DIGEST_SHA256;
   else if (!strcmp(name, "sha512"))
     return DIGEST_SHA512;
+  else if (!strcmp(name, "sha3-256"))
+    return DIGEST_SHA3_256;
+  else if (!strcmp(name, "sha3-512"))
+    return DIGEST_SHA3_512;
   else
     return -1;
 }
@@ -1692,6 +1710,7 @@ struct crypto_digest_t {
     SHA_CTX sha1; /**< state for SHA1 */
     SHA256_CTX sha2; /**< state for SHA256 */
     SHA512_CTX sha512; /**< state for SHA512 */
+    keccak_state sha3; /**< state for SHA3-[256,512] */
   } d; /**< State for the digest we're using.  Only one member of the
         * union is usable, depending on the value of <b>algorithm</b>. */
   digest_algorithm_bitfield_t algorithm : 8; /**< Which algorithm is in use? */
@@ -1715,9 +1734,12 @@ crypto_digest_t *
 crypto_digest256_new(digest_algorithm_t algorithm)
 {
   crypto_digest_t *r;
-  tor_assert(algorithm == DIGEST_SHA256);
+  tor_assert(algorithm == DIGEST_SHA256 || algorithm == DIGEST_SHA3_256);
   r = tor_malloc(sizeof(crypto_digest_t));
-  SHA256_Init(&r->d.sha2);
+  if (algorithm == DIGEST_SHA256)
+    SHA256_Init(&r->d.sha2);
+  else
+    keccak_init(&r->d.sha3, KECCAK_TARGET_TO_RATE(256), KECCAK_HASH_DELIM);
   r->algorithm = algorithm;
   return r;
 }
@@ -1728,9 +1750,12 @@ crypto_digest_t *
 crypto_digest512_new(digest_algorithm_t algorithm)
 {
   crypto_digest_t *r;
-  tor_assert(algorithm == DIGEST_SHA512);
+  tor_assert(algorithm == DIGEST_SHA512 || algorithm == DIGEST_SHA3_512);
   r = tor_malloc(sizeof(crypto_digest_t));
-  SHA512_Init(&r->d.sha512);
+  if (algorithm == DIGEST_SHA512)
+    SHA512_Init(&r->d.sha512);
+  else
+    keccak_init(&r->d.sha3, KECCAK_TARGET_TO_RATE(512), KECCAK_HASH_DELIM);
   r->algorithm = algorithm;
   return r;
 }
@@ -1758,6 +1783,9 @@ crypto_digest_add_bytes(crypto_digest_t *digest, const char *data,
    * SHA in hardware. But so far the delay of getting the question
    * to the hardware, and hearing the answer, is likely higher than
    * just doing it ourselves. Hashes are fast.
+   *
+   * This doesn't apply to CPUs with SHA instructions as the assembly
+   * will be used if OpenSSL is new enough.
    */
   switch (digest->algorithm) {
     case DIGEST_SHA1:
@@ -1768,6 +1796,10 @@ crypto_digest_add_bytes(crypto_digest_t *digest, const char *data,
       break;
     case DIGEST_SHA512:
       SHA512_Update(&digest->d.sha512, (void*)data, len);
+      break;
+    case DIGEST_SHA3_256: /* FALLSTHROUGH */
+    case DIGEST_SHA3_512:
+      keccak_update(&digest->d.sha3, (const uint8_t*)data, len);
       break;
     default:
       tor_fragile_assert();
@@ -1787,7 +1819,11 @@ crypto_digest_get_digest(crypto_digest_t *digest,
   crypto_digest_t tmpenv;
   tor_assert(digest);
   tor_assert(out);
-  /* memcpy into a temporary ctx, since SHA*_Final clears the context */
+  /* memcpy into a temporary ctx, since SHA*_Final clears the context.
+   *
+   * keccak_clone() exists for this, but it's just a memcpy anyway, so
+   * there's no need to do anything different for SHA3.
+   */
   memcpy(&tmpenv, digest, sizeof(crypto_digest_t));
   switch (digest->algorithm) {
     case DIGEST_SHA1:
@@ -1802,11 +1838,22 @@ crypto_digest_get_digest(crypto_digest_t *digest,
       tor_assert(out_len <= DIGEST512_LEN);
       SHA512_Final(r, &tmpenv.d.sha512);
       break;
+    case DIGEST_SHA3_256:
+      tor_assert(out_len <= DIGEST256_LEN);
+      keccak_finalize(&tmpenv.d.sha3);
+      keccak_squeeze(&tmpenv.d.sha3, r, out_len);
+      break;
+    case DIGEST_SHA3_512:
+      tor_assert(out_len <= DIGEST512_LEN);
+      keccak_finalize(&tmpenv.d.sha3);
+      keccak_squeeze(&tmpenv.d.sha3, r, out_len);
+      break;
     default:
       log_warn(LD_BUG, "Called with unknown algorithm %d", digest->algorithm);
       /* If fragile_assert is not enabled, then we should at least not
        * leak anything. */
       memwipe(r, 0xff, sizeof(r));
+      memwipe(&tmpenv, 0, sizeof(crypto_digest_t));
       tor_fragile_assert();
       break;
   }
@@ -1871,10 +1918,12 @@ crypto_digest_smartlist_prefix(char *digest_out, size_t len_out,
     case DIGEST_SHA1:
       d = crypto_digest_new();
       break;
-    case DIGEST_SHA256:
+    case DIGEST_SHA256: /* FALLSTHROUGH */
+    case DIGEST_SHA3_256:
       d = crypto_digest256_new(alg);
       break;
-    case DIGEST_SHA512:
+    case DIGEST_SHA512: /* FALLSTHROUGH */
+    case DIGEST_SHA3_512:
       d = crypto_digest512_new(alg);
       break;
     default:

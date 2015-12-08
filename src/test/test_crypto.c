@@ -310,6 +310,21 @@ test_crypto_sha(void *arg)
                        "feebbd454d4423643ce80e2a9ac94fa54ca49f");
   tt_int_op(i, OP_EQ, 0);
 
+  /* Test SHA3-256 with a test vector from the Keccak Code Package.  */
+  const uint8_t keccak_kat_msg[] = { 0x1f, 0x87, 0x7c };
+  i = crypto_digest256(data, (const char*)keccak_kat_msg, 3, DIGEST_SHA3_256);
+  test_memeq_hex(data, "BC22345E4BD3F792A341CF18AC0789F1"
+                       "C9C966712A501B19D1B6632CCD408EC5");
+  tt_int_op(i, OP_EQ, 0);
+
+  /* Test SHA3-512 with a test vector from the Keccak Code Package. */
+  i = crypto_digest512(data, (const char*)keccak_kat_msg, 3, DIGEST_SHA3_512);
+  test_memeq_hex(data, "CB20DCF54955F8091111688BECCEF48C"
+                       "1A2F0D0608C3A575163751F002DB30F4"
+                       "0F2F671834B22D208591CFAF1F5ECFE4"
+                       "3C49863A53B3225BDFD7C6591BA7658B");
+  tt_int_op(i, OP_EQ, 0);
+
   /* Test HMAC-SHA256 with test cases from wikipedia and RFC 4231 */
 
   /* Case empty (wikipedia) */
@@ -438,6 +453,48 @@ test_crypto_sha(void *arg)
   tt_mem_op(d_out1,OP_EQ, d_out2, DIGEST512_LEN);
   crypto_digest_get_digest(d1, d_out1, DIGEST512_LEN);
   crypto_digest512(d_out2, "abcdef", 6, DIGEST_SHA512);
+  tt_mem_op(d_out1,OP_EQ, d_out2, DIGEST512_LEN);
+  crypto_digest_free(d1);
+  crypto_digest_free(d2);
+
+  /* Incremental digest code with SHA3-256 */
+  d1 = crypto_digest256_new(DIGEST_SHA3_256);
+  tt_assert(d1);
+  crypto_digest_add_bytes(d1, "abcdef", 6);
+  d2 = crypto_digest_dup(d1);
+  tt_assert(d2);
+  crypto_digest_add_bytes(d2, "ghijkl", 6);
+  crypto_digest_get_digest(d2, d_out1, DIGEST256_LEN);
+  crypto_digest256(d_out2, "abcdefghijkl", 12, DIGEST_SHA3_256);
+  tt_mem_op(d_out1,OP_EQ, d_out2, DIGEST256_LEN);
+  crypto_digest_assign(d2, d1);
+  crypto_digest_add_bytes(d2, "mno", 3);
+  crypto_digest_get_digest(d2, d_out1, DIGEST256_LEN);
+  crypto_digest256(d_out2, "abcdefmno", 9, DIGEST_SHA3_256);
+  tt_mem_op(d_out1,OP_EQ, d_out2, DIGEST256_LEN);
+  crypto_digest_get_digest(d1, d_out1, DIGEST256_LEN);
+  crypto_digest256(d_out2, "abcdef", 6, DIGEST_SHA3_256);
+  tt_mem_op(d_out1,OP_EQ, d_out2, DIGEST256_LEN);
+  crypto_digest_free(d1);
+  crypto_digest_free(d2);
+
+  /* Incremental digest code with SHA3-512 */
+  d1 = crypto_digest512_new(DIGEST_SHA3_512);
+  tt_assert(d1);
+  crypto_digest_add_bytes(d1, "abcdef", 6);
+  d2 = crypto_digest_dup(d1);
+  tt_assert(d2);
+  crypto_digest_add_bytes(d2, "ghijkl", 6);
+  crypto_digest_get_digest(d2, d_out1, DIGEST512_LEN);
+  crypto_digest512(d_out2, "abcdefghijkl", 12, DIGEST_SHA3_512);
+  tt_mem_op(d_out1,OP_EQ, d_out2, DIGEST512_LEN);
+  crypto_digest_assign(d2, d1);
+  crypto_digest_add_bytes(d2, "mno", 3);
+  crypto_digest_get_digest(d2, d_out1, DIGEST512_LEN);
+  crypto_digest512(d_out2, "abcdefmno", 9, DIGEST_SHA3_512);
+  tt_mem_op(d_out1,OP_EQ, d_out2, DIGEST512_LEN);
+  crypto_digest_get_digest(d1, d_out1, DIGEST512_LEN);
+  crypto_digest512(d_out2, "abcdef", 6, DIGEST_SHA3_512);
   tt_mem_op(d_out1,OP_EQ, d_out2, DIGEST512_LEN);
 
  done:
